@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "x64-Release",
+      "displayName": "Visual Studio 64-bit Release",
+      "description": "Build Release for x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LEGACY_CPP14": "ON"
+      }
+    },
+    {
+      "name": "Win32-ReleaseMini",
+      "displayName": "Visual Studio 32-bit ReleaseMini",
+      "description": "Build ReleaseMini for Win32",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "Win32",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "ReleaseMini",
+        "LEGACY_CPP14": "ON"
+      }
+    }
+  ]
+}

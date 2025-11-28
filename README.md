@@ -32,3 +32,7 @@ Just include the header in your project:
 ```
 If you don’t define `STBTT_FREESTANDING`, the library will use standard C headers (`math.h`, `stdlib.h`, `string.h`).
 When freestanding, you may redefine any of the macros below to plug in your own engine’s runtime.
+
+## Benchmarks
+
+# soon

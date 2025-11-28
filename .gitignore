@@ -1,8 +1,7 @@
+/CMakeFiles
 /build
 /.vs
 /.vscode
-/vs/.vs
-/vs/build
 *.o
 *.obj
 *.exe
