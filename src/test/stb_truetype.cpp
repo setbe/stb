@@ -99,7 +99,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     switch (msg) {
     case WM_SIZE:
         g_glyph_px = LOWORD(l); // window width
-        render_A("C:\\Windows\\Fonts\\arialbd.ttf");
+        render_A("C:\\Windows\\Fonts\\arialbd.ttf"); // load .ttf file again and render A
         InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
         // fallthrough
@@ -134,7 +134,6 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
-    return 0;
     ExitProcess(0);
 }
 #else // defined CONSOLE

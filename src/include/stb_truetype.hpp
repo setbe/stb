@@ -1137,21 +1137,19 @@ struct Point { float x, y; };
 struct TrueType {
     FontInfo fi{};
 
-    // @TODO rename parameter "glyph" to "glyph_index" in some methods
-
     TrueType() = default;
     inline bool ReadBytes(uint8_t* font_buffer) noexcept;
     inline float ScaleForPixelHeight(float height) const noexcept;
     inline int FindGlyphIndex(int unicode_codepoint) const noexcept;
-    inline GlyphHorMetrics GetGlyphHorMetrics(int glyph) const noexcept;
+    inline GlyphHorMetrics GetGlyphHorMetrics(int glyph_index) const noexcept;
 
-    inline int GetGlyphInfoT2(int glyph, Box& out) noexcept;
-    inline bool GetGlyphBox(int glyph, Box& out) noexcept;
-    inline Box GetGlyphBitmapBox(int glyph,
+    inline int GetGlyphInfoT2(int glyph_index, Box& out) noexcept;
+    inline bool GetGlyphBox(int glyph_index, Box& out) noexcept;
+    inline Box GetGlyphBitmapBox(int glyph_index,
                           float scale_x,     float scale_y,
                           float shift_x = 0, float shift_y = 0) noexcept;
 
-    inline void MakeGlyphBitmap(unsigned char* output, int glyph,
+    inline void MakeGlyphBitmap(unsigned char* output, int glyph_index,
                             int out_w, int out_h, int out_stride,
                             float scale_x,       float scale_y,
                             float shift_x = 0.f, float shift_y = 0.f) noexcept;
@@ -1176,15 +1174,15 @@ struct TrueType {
 private:
     inline int GetGlyfOffset(int glyph_index) const noexcept;
     inline uint32_t FindTable(const char* tag) const noexcept;
-    inline Buf GetCidGlyphSubrs(int glyph) noexcept;
-    inline int RunCharString(int glyph, CurveShape&) noexcept;
+    inline Buf GetCidGlyphSubrs(int glyph_index) noexcept;
+    inline int RunCharString(int glyph_index, CurveShape&) noexcept;
 
     inline int CloseShape(Vertex* vertices, int num_vertices, bool was_off, bool start_off,
         int32_t sx, int32_t sy, int32_t scx, int32_t scy, int32_t cx, int32_t cy) noexcept;
 
-    inline int GetGlyphShape(int glyph, Vertex** pvertices) noexcept;
-    inline int GetGlyphShapeTT(int glyph, Vertex** pvertices) noexcept;
-    inline int GetGlyphShapeT2(int glyph, Vertex** pvertices) noexcept;
+    inline int GetGlyphShape(int glyph_index, Vertex** pvertices) noexcept;
+    inline int GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexcept;
+    inline int GetGlyphShapeT2(int glyph_index, Vertex** pvertices) noexcept;
 
     inline void AddPoint(Point* points, int n, float x, float y) noexcept;
     inline int TesselateCurve(Point* points, int* num_points,
@@ -1471,9 +1469,9 @@ inline int TrueType::GetGlyfOffset(int glyph_index) const noexcept {
     return g1==g2 ? -1 : g1; // if length is 0, return -1
 }
 
-inline int TrueType::GetGlyphInfoT2(int glyph, Box& out) noexcept {
+inline int TrueType::GetGlyphInfoT2(int glyph_index, Box& out) noexcept {
     CurveShape c(1);
-    int r = RunCharString(glyph, c);
+    int r = RunCharString(glyph_index, c);
     out.x0 = r ? c.min_x : 0;
     out.y0 = r ? c.min_y : 0;
     out.x1 = r ? c.max_x : 0;
@@ -1481,11 +1479,11 @@ inline int TrueType::GetGlyphInfoT2(int glyph, Box& out) noexcept {
     return r ? c.num_vertices : 0;
 }
 
-inline bool TrueType::GetGlyphBox(int glyph, Box& box) noexcept {
+inline bool TrueType::GetGlyphBox(int glyph_index, Box& box) noexcept {
     if (fi.cff.size) {
-        GetGlyphInfoT2(glyph, box);
+        GetGlyphInfoT2(glyph_index, box);
     } else {
-        int g = GetGlyfOffset(glyph);
+        int g = GetGlyfOffset(glyph_index);
         if (g < 0) return false;
 
         box.x0 = Short(fi.data + g + 2);
@@ -1496,11 +1494,11 @@ inline bool TrueType::GetGlyphBox(int glyph, Box& box) noexcept {
     return true;
 }
 
-inline Box TrueType::GetGlyphBitmapBox(int glyph,
+inline Box TrueType::GetGlyphBitmapBox(int glyph_index,
                                  float scale_x, float scale_y,
                                  float shift_x, float shift_y) noexcept {
     Box b{};
-    if (GetGlyphBox(glyph, b)) {
+    if (GetGlyphBox(glyph_index, b)) {
         // move to integral bboxes (treating pixels as little squares, what pixels get touched)?
         b.x0 = STBTT_ifloor( b.x0 * scale_x + shift_x);
         b.y0 = STBTT_ifloor(-b.y1 * scale_y + shift_y);
@@ -1541,7 +1539,7 @@ inline uint32_t TrueType::FindTable(const char* tag) const noexcept {
     return 0;
 }
 
-inline Buf TrueType::GetCidGlyphSubrs(int glyph) noexcept {
+inline Buf TrueType::GetCidGlyphSubrs(int glyph_index) noexcept {
     Buf fd_select = fi.fdselect; // copy
     int nranges, start, end, v, fmt;
     int fdselector = -1;
@@ -1550,7 +1548,7 @@ inline Buf TrueType::GetCidGlyphSubrs(int glyph) noexcept {
     fmt = fd_select.Get8();
     if (fmt == 0) {
         // untested
-        fd_select.Skip(glyph);
+        fd_select.Skip(glyph_index);
         fdselector = fd_select.Get8();
     }
     else if (fmt == 3) {
@@ -1559,7 +1557,7 @@ inline Buf TrueType::GetCidGlyphSubrs(int glyph) noexcept {
         for (size_t i = 0; i < nranges; ++i) {
             v   = fd_select.Get8();
             end = fd_select.Get16();
-            if (glyph >= start && glyph < end) {
+            if (glyph_index >= start && glyph_index < end) {
                 fdselector = v;
                 break;
             }
@@ -1855,20 +1853,20 @@ inline int TrueType::CloseShape(Vertex* vertices, int num_vertices, bool was_off
     return num_vertices;
 }
 
-inline int TrueType::GetGlyphShape(int glyph, Vertex** pvertices) noexcept {
+inline int TrueType::GetGlyphShape(int glyph_index, Vertex** pvertices) noexcept {
     if (!fi.cff.size)
-        return GetGlyphShapeTT(glyph, pvertices);
+        return GetGlyphShapeTT(glyph_index, pvertices);
     else
-        return GetGlyphShapeT2(glyph, pvertices);
+        return GetGlyphShapeT2(glyph_index, pvertices);
 }
 
-inline int TrueType::GetGlyphShapeTT(int glyph, Vertex** pvertices) noexcept {
+inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexcept {
     int16_t num_contours;
     uint8_t* end_pts_contours;
     uint8_t* data = fi.data;
     Vertex* vertices = nullptr;
     int num_vertices = 0;
-    int g = GetGlyfOffset(glyph);
+    int g = GetGlyfOffset(glyph_index);
 
     *pvertices = nullptr;
 
@@ -2102,14 +2100,14 @@ inline int TrueType::GetGlyphShapeTT(int glyph, Vertex** pvertices) noexcept {
     return num_vertices;
 }
 
-inline int TrueType::GetGlyphShapeT2(int glyph, Vertex** pvertices) noexcept {
+inline int TrueType::GetGlyphShapeT2(int glyph_index, Vertex** pvertices) noexcept {
     // runs the charstring twice, once to count and once to output (to avoid realloc)
     CurveShape cs(1);
     CurveShape out(0);
-    if (RunCharString(glyph, cs)) {
+    if (RunCharString(glyph_index, cs)) {
         *pvertices = reinterpret_cast<Vertex*>(STBTT_malloc(cs.num_vertices * sizeof(Vertex), fi.userdata));
         out.p_vertices = *pvertices;
-        if (RunCharString(glyph, out)) {
+        if (RunCharString(glyph_index, out)) {
             STBTT_assert(out.num_vertices == cs.num_vertices);
             return out.num_vertices;
         }
@@ -2120,14 +2118,14 @@ inline int TrueType::GetGlyphShapeT2(int glyph, Vertex** pvertices) noexcept {
 
 
 inline void TrueType::MakeGlyphBitmap(
-    unsigned char* output, int glyph,
+    unsigned char* output, int glyph_index,
     int out_w, int out_h,
     int out_stride,
     float scale_x, float scale_y,
     float shift_x, float shift_y) noexcept {
     Vertex* vertices;
-    int num_verts = GetGlyphShape(glyph, &vertices);
-    Box box = GetGlyphBitmapBox(glyph, scale_x, scale_y, shift_x, shift_y);
+    int num_verts = GetGlyphShape(glyph_index, &vertices);
+    Box box = GetGlyphBitmapBox(glyph_index, scale_x, scale_y, shift_x, shift_y);
 
     Bitmap bm;
     bm.pixels = output;
