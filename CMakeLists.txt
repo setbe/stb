@@ -215,6 +215,8 @@ add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
 
 # --- Sources ---------------------------------------------------------------
 set(SOURCES_TRUETYPE        "src/include/stb_truetype.hpp")
+set(SOURCES_TRUETYPE_CATCH  "src/include/stb_truetype.hpp"
+                            "src/include/stb_truetype.h")
 set(SOURCES_IMAGE           "src/include/stb_image.hpp")
 set(SOURCES_IMAGE_WRITE     "src/include/stb_image_write.hpp")
 set(SOURCES_IMAGE_RESIZE2   "src/include/stb_image_resize2.hpp")
@@ -251,7 +253,7 @@ function(setup_release_no_console_for_exe exe_target)
     endif()
 endfunction()
 
-# --- Test libraries (STATIC with .cpp, visible in Visual Studio) ----------
+# --- Test libraries (STATIC with .cpp) ----------
 function(add_freestanding_test name headers test_cpp)
     add_executable(${name} ${test_cpp})
     setup_release_no_console_for_exe(${name})
@@ -271,6 +273,28 @@ function(add_freestanding_test name headers test_cpp)
     configure_target_for_all(${name})
 endfunction()
 
+# --- FREESTANDING Test libraries (STATIC with .cpp) ----------
+function(add_general_test name headers test_cpp)
+    add_executable(${name} ${test_cpp})
+    setup_release_no_console_for_exe(${name})
+
+    # Define CONSOLE for all configurations,
+    # except for ReleaseNoConsole and ReleaseMiniNoConsole
+    target_compile_definitions(${name} PRIVATE
+    $<$<OR:$<CONFIG:Debug>,$<CONFIG:Release>,$<CONFIG:ReleaseMini>>:CONSOLE>)
+
+    # Make stb headers visible in IDE by attaching them to the target:
+    target_sources(${name} PRIVATE ${headers})
+
+    target_include_directories(${name} PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+    )
+
+    configure_target_for_all(${name})
+endfunction()
+
+# --- Freestanding Tests ---
+
 add_freestanding_test(test_tt
     "${SOURCES_TRUETYPE}"
     "src/test/stb_truetype.cpp"
@@ -289,6 +313,13 @@ add_freestanding_test(test_img_write
 add_freestanding_test(test_img_resize2
     "${SOURCES_IMAGE_RESIZE2}"
     "src/test/stb_image_resize2.cpp"
+)
+
+# --- General Tests ---
+
+add_general_test(test_tt_catch
+    "${SOURCES_TRUETYPE_CATCH}"
+    "src/test/stb_truetype_catch.cpp"
 )
 
 # --- Usage notes -------------------------------------------------------------

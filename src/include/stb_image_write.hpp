@@ -169,10 +169,283 @@ CREDITS:
 
 #ifdef STBIW_FREESTANDING
 
+// If freestanding: you must provide own math macros.
+// e.g. #define your own STBIW_ifloor/STBIW_iceil() before including this file.
+
+// STBIW_ifloor(x)
+// STBIW_iceil(x)
+// STBIW_sqrt(x)
+// STBIW_pow(x, y)
+// STBIW_fmod(x, y)
+// STBIW_cos(x)
+// STBIW_acos(x)
+// STBIW_fabs(x)
+
+#else // !STBIW_FREESTANDING
+
+// Floor / Ceil
+#   ifndef STBIW_ifloor
+#       include <math.h>
+#       define STBIW_ifloor(x)   ((int)floor(x))
+#       define STBIW_iceil(x)    ((int)ceil(x))
+#   endif
+
+// Square root / power
+#   ifndef STBIW_sqrt
+#       include <math.h>
+#       define STBIW_sqrt(x)     sqrt(x)
+#       define STBIW_pow(x,y)    pow(x,y)
+#   endif
+
+// fmod
+#   ifndef STBIW_fmod
+#       include <math.h>
+#       define STBIW_fmod(x,y)   fmod(x,y)
+#   endif
+
+// cos / acos
+#   ifndef STBIW_cos
+#       include <math.h>
+#       define STBIW_cos(x)      cos(x)
+#       define STBIW_acos(x)     acos(x)
+#   endif
+
+// fabs
+#   ifndef STBIW_fabs
+#       include <math.h>
+#       define STBIW_fabs(x)     fabs(x)
+#   endif
+
+#endif // !STBIW_FREESTANDING
+
+
+// ----------------------------------------------
+// Fallbacks for completely math.h-free environments
+// (only compiled if STBIW_FREESTANDING is defined
+//  and user hasn't provided replacements)
+// ----------------------------------------------
+#ifdef STBIW_FREESTANDING
+
+#ifndef STBIW_ifloor
+static inline int STBIW_ifloor(float x) noexcept {
+    return (int)(x >= 0 ? (int)x : (int)x - (x != (int)x));
+}
+#   define STBIW_ifloor(x) STBIW_ifloor(x)
 #endif
+
+#ifndef STBIW_iceil
+static inline int STBIW_iceil(float x) noexcept {
+    int i = (int)x; return (x > i) ? i + 1 : i;
+}
+#   define STBIW_iceil(x) STBIW_iceil(x)
+#endif
+
+#ifndef STBIW_fabs
+static inline float STBIW_fabs(float x) noexcept { return x < 0 ? -x : x; }
+#define STBIW_fabs(x) STBIW_fabs(x)
+#endif
+
+#ifndef STBIW_sqrt
+// Basic Newton-Raphson sqrt approximation
+static inline float STBIW_sqrt(float x) noexcept {
+    if (x <= 0) return 0;
+    float r = x;
+    for (int i = 0; i < 5; ++i)
+        r = 0.5f * (r + x / r);
+    return r;
+}
+#define STBIW_sqrt(x) STBIW_sqrt(x)
+#endif
+
+#ifndef STBIW_pow
+static inline float STBIW_pow(float base, float exp) noexcept {
+    // crude exp/log approximation (only for small exp)
+    float result = 1.0f;
+    int e = (int)exp;
+    for (int i = 0; i < e; ++i)
+        result *= base;
+    return result;
+}
+#define STBIW_pow(x,y) STBIW_pow(x,y)
+#endif
+
+#ifndef STBIW_fmod
+static inline float STBIW_fmod(float x, float y) noexcept {
+    return x - (int)(x / y) * y;
+}
+#    define STBIW_fmod(x,y) STBIW_fmod(x,y)
+#endif
+
+#ifndef STBIW_cos
+// Taylor approximation of cos(x) for small angles
+static inline float STBIW_cos(float x) noexcept {
+    const float PI = 3.14159265358979323846f;
+    while (x > PI) x -= 2 * PI;
+    while (x < -PI) x += 2 * PI;
+    float x2 = x * x;
+    return 1.0f - x2 / 2 + x2 * x2 / 24 - x2 * x2 * x2 / 720;
+}
+#    define STBIW_cos(x) STBIW_cos(x)
+#endif
+
+#ifndef STBIW_acos
+// Rough acos approximation
+static inline float STBIW_acos(float x) noexcept {
+    // Clamp
+    if (x < -1) x = -1;
+    if (x > 1) x = 1;
+    // Polynomial approximation
+    float negate = x < 0;
+    x = STBIW_fabs(x);
+    float ret = -0.0187293f;
+    ret = ret * x + 0.0742610f;
+    ret = ret * x - 0.2121144f;
+    ret = ret * x + 1.5707288f;
+    ret = ret * STBIW_sqrt(1.0f - x);
+    return negate ? 3.14159265f - ret : ret;
+}
+#    define STBIW_acos(x) STBIW_acos(x)
+#endif
+
+#endif // STBIW_FREESTANDING
+
+// ----------------------------------------------
+// #define your own functions "STBIW_malloc" / "STBIW_free" to avoid OS calls.
+// ----------------------------------------------
+
+#ifdef STBIW_FREESTANDING
+
+// STBIW_malloc(x,u)
+// STBIW_free(x,u)
+// STBIW_strlen(x)
+// STBIW_memcpy
+// STBIW_memset
+
+#else // !STBIW_FREESTANDING
+
+#include <stdlib.h>
+#include <string.h>
+
+// Default to malloc/free
+#ifndef STBIW_malloc
+#   define STBIW_malloc(x,u)  ((void)(u), malloc(x))
+#   define STBIW_free(x,u)    ((void)(u), free(x))
+#endif
+
+#ifndef STBIW_strlen
+#   define STBIW_strlen(x)    strlen(x)
+#endif
+
+#ifndef STBIW_memcpy
+#   define STBIW_memcpy       memcpy
+#   define STBIW_memset       memset
+#endif
+
+#endif // !STBIW_FREESTANDING
+
+// ----------------------------------------------
+// Fallbacks for freestanding builds without stdlib
+// Use VirtualAlloc/VirtualFree or mmap/munmap
+// ----------------------------------------------
+#ifdef STBIW_FREESTANDING
+
+#if !defined(STBIW_malloc) || !defined(STBIW_free)
+#if defined(_WIN32)
+#   define WIN32_LEAN_AND_MEAN
+#   include <windows.h>
+
+static void* STBIW_win_alloc(size_t sz, void* userdata) {
+    const int commit = 0x00001000;
+    const int reserve = 0x00002000;
+    const int page_readwrite = 0x04;
+    (void)userdata;
+    return VirtualAlloc(nullptr, sz, commit | reserve, page_readwrite);
+}
+
+static void STBIW_win_free(void* ptr, void* userdata) {
+    const int release = 0x00008000;
+    (void)userdata;
+    if (ptr) VirtualFree(ptr, 0, release);
+}
+
+#   ifndef STBIW_malloc
+#       define STBIW_malloc(x,u)  STBIW_win_alloc(x,u)
+#   endif
+#   ifndef STBIW_free
+#       define STBIW_free(x,u)    STBIW_win_free(x,u)
+#   endif
+
+#else // POSIX fallback
+#   include <sys/mman.h>
+#   include <unistd.h>
+
+static void* STBIW_posix_alloc(size_t sz, void* userdata) {
+    (void)userdata;
+    size_t total = sz + sizeof(size_t);
+    void* p = mmap(nullptr, total, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return nullptr;
+    *((size_t*)p) = total; // keep the size at the beginning of the block
+    // return the pointer after size field
+    return (uint8_t*)p + sizeof(size_t);
+}
+
+static void STBIW_posix_free(void* ptr, void* userdata) {
+    (void)userdata;
+    if (!ptr) return;
+    // restore the start address and read the size
+    uint8_t* base = (uint8_t*)ptr - sizeof(size_t);
+    size_t total = *((size_t*)base);
+    munmap(base, total); // return mmap back to the system
+}
+
+#   ifndef STBIW_malloc
+#       define STBIW_malloc(x,u)  STBIW_posix_alloc(x,u)
+#   endif
+#   ifndef STBIW_free
+#       define STBIW_free(x,u)    STBIW_posix_free(x,u)
+#   endif
+
+#endif // platform
+#endif // missing malloc/free
+
+#ifndef STBIW_strlen
+static size_t STBIW_strlen(const char* s) {
+    size_t len = 0;
+    while (s && s[len]) ++len;
+    return len;
+}
+#define STBIW_strlen(x) STBIW_strlen(x)
+#endif
+
+#ifndef STBIW_memcpy
+static void* STBIW_memcpy(void* dst, const void* src, size_t sz) {
+    unsigned char* d = (unsigned char*)dst;
+    const unsigned char* s = (const unsigned char*)src;
+    while (sz--) *d++ = *s++;
+    return dst;
+}
+static void* STBIW_memset(void* dst, int val, size_t sz) {
+    unsigned char* d = (unsigned char*)dst;
+    while (sz--) *d++ = (unsigned char)val;
+    return dst;
+}
+#define STBIW_memcpy STBIW_memcpy
+#define STBIW_memset STBIW_memset
+#endif
+
+#endif // STBIW_FREESTANDING
 
 namespace stb {
     namespace img {
+struct Writer {
+private:
+    bool _flip_vertically;
+public:
+    explicit Writer(bool flip_vertically_on_write) noexcept 
+        : _flip_vertically{ flip_vertically_on_write } {
 
+    }
+}; // struct Writer
     } // namespace img
 } // namespace stb

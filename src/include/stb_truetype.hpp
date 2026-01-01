@@ -426,7 +426,7 @@ struct Buf {
     inline uint32_t Get(int n) noexcept {
         STBTT_assert(n >= 1 && n <= 4);
         uint32_t v = 0;
-        for (size_t i = 0; i < n; ++i)
+        for (int i = 0; i < n; ++i)
             v = (v << 8) | Get8();
         return v;
     }
@@ -748,7 +748,7 @@ struct ActiveEdge {
         if (x0 <= x && x1 <= x)
             scanline[x] += e.direction * (y1 - y0);
         else if (x0 >= x + 1 && x1 >= x + 1)
-            ;
+            ; // are we doing nothing here?
         else {
             STBTT_assert(x0 >= x && x0 <= x + 1 && x1 >= x && x1 <= x + 1);
             scanline[x] += e.direction * (y1 - y0) * (1 - ((x0 - x) + (x1 - x)) / 2); // coverage = 1 - average x position
@@ -1500,10 +1500,15 @@ inline Box TrueType::GetGlyphBitmapBox(int glyph_index,
     Box b{};
     if (GetGlyphBox(glyph_index, b)) {
         // move to integral bboxes (treating pixels as little squares, what pixels get touched)?
-        b.x0 = STBTT_ifloor( b.x0 * scale_x + shift_x);
-        b.y0 = STBTT_ifloor(-b.y1 * scale_y + shift_y);
-        b.x1 = STBTT_iceil ( b.x1 * scale_x + shift_x);
-        b.y1 = STBTT_iceil (-b.y0 * scale_y + shift_y);
+        const int x0 = b.x0;
+        const int y0 = b.y0;
+        const int x1 = b.x1;
+        const int y1 = b.y1;
+
+        b.x0 = STBTT_ifloor(x0 * scale_x + shift_x);
+        b.y0 = STBTT_ifloor(-y1 * scale_y + shift_y);
+        b.x1 = STBTT_iceil(x1 * scale_x + shift_x);
+        b.y1 = STBTT_iceil(-y0 * scale_y + shift_y);
     }
     else {
         // e.g. space character
@@ -1554,7 +1559,7 @@ inline Buf TrueType::GetCidGlyphSubrs(int glyph_index) noexcept {
     else if (fmt == 3) {
         nranges = fd_select.Get16();
         start   = fd_select.Get16();
-        for (size_t i = 0; i < nranges; ++i) {
+        for (int i = 0; i < nranges; ++i) {
             v   = fd_select.Get8();
             end = fd_select.Get16();
             if (glyph_index >= start && glyph_index < end) {
@@ -2064,7 +2069,7 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
             comp_num_verts = GetGlyphShape(gidx, &comp_verts);
             if (comp_num_verts > 0) {
                 // Transform vertices.
-                for (size_t i = 0; i < comp_num_verts; ++i) {
+                for (int i = 0; i < comp_num_verts; ++i) {
                     Vertex* v = &comp_verts[i];
                     Vertex::PrimitiveType x, y;
                     x = v->x; y = v->y;
@@ -2537,7 +2542,7 @@ void TrueType::RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int vsubsample,
 
         {
             float sum = 0;
-            for (size_t i = 0; i < out.w; ++i) {
+            for (int i = 0; i < out.w; ++i) {
                 float k;
                 int m;
                 sum += scanline2[i];

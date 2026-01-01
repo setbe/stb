@@ -42,7 +42,7 @@ static void render_A(const char* font_path) {
     if (!tt.ReadBytes(font)) return;
 
     float scale = tt.ScaleForPixelHeight(g_glyph_px);
-    int glyph = tt.FindGlyphIndex('A');
+    int glyph = tt.FindGlyphIndex('a');
 
     stb::Box box;
     if (!tt.GetGlyphBox(glyph, box)) return;
