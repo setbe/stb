@@ -39,20 +39,6 @@ SOFTWARE.
 
 // @TODO split internal logic into corresponding namespace
 
-
-
-#ifndef STBTT_MAX_OVERSAMPLE
-#   define STBTT_MAX_OVERSAMPLE   8
-#endif
-
-#if STBTT_MAX_OVERSAMPLE > 255
-#   error "STBTT_MAX_OVERSAMPLE cannot be > 255"
-#endif
-
-#ifndef STBTT_RASTERIZER_VERSION
-#   define STBTT_RASTERIZER_VERSION 2
-#endif
-
 #ifdef _MSC_VER
 #   define STBTT__NOTUSED(v)  (void)(v)
 #else
@@ -605,44 +591,12 @@ struct Edge {
 
 struct ActiveEdge {
     ActiveEdge* next;
-#if STBTT_RASTERIZER_VERSION==1
-    int x, dx;
-    float ey;
-    int direction;
-    // storing fractional coordinates as integers
-    static inline int FixedShift() noexcept { return 10; }
-    static inline int Fixed() noexcept { return 1 << FixedShift(); }
-    static inline int FixedMask() noexcept { return Fixed() - 1; }
-#elif STBTT_RASTERIZER_VERSION==2
     float fx, fdx, fdy;
     float direction;
     float sy;
     float ey;
-#else
-#   error "Unrecognized value of STBTT_RASTERIZER_VERSION"
-#endif
 
     static inline ActiveEdge* NewActive(HandleHeap* hh, Edge* e, int off_x, float start_point, void* userdata) noexcept {
-#if STBTT_RASTERIZER_VERSION == 1
-        ActiveEdge* z = reinterpret_cast<ActiveEdge*>(hh->Alloc(sizeof(*z), userdata));
-        float dxdy = (e->x1 - e->x0) / (e->y1 - e->y0);
-        STBTT_assert(z != nullptr);
-        if (!z) return z;
-
-        // round dx down to avoid overshooting
-        if (dxdy < 0)
-            z->dx = -STBTT_ifloor(Fixed() * -dxdy);
-        else
-            z->dx = STBTT_ifloor(Fixed() * dxdy);
-
-        z->x = STBTT_ifloor(Fixed()*e->x0 + z->dx*(start_point-e->y0)); // use z->dx so when we offset later it's by the same amount
-        z->x -= off_x * Fixed();
-
-        z->ey = e->y1;
-        z->next = 0;
-        z->direction = e->invert ? 1 : -1;
-        return z;
-#elif STBTT_RASTERIZER_VERSION == 2
         ActiveEdge* z = reinterpret_cast<ActiveEdge*>(hh->Alloc(sizeof(*z), userdata));
         float dxdy = (e->x1 - e->x0) / (e->y1 - e->y0);
         STBTT_assert(z != nullptr);
@@ -657,66 +611,8 @@ struct ActiveEdge {
         z->ey = e->y1;
         z->next = 0;
         return z;
-#else
-#   error "Unrecognized value of STBTT_RASTERIZER_VERSION"
-#endif
      } // NewActive
 
-
-#if STBTT_RASTERIZER_VERSION == 1
-    // note: this routine clips fills that extend off the edges... ideally this
-    // wouldn't happen, but it could happen if the truetype glyph bounding boxes
-    // are wrong, or if the user supplies a too-small bitmap
-    void FillActiveEdgesV1(unsigned char* scanline, int len, int max_weight) noexcept {
-        // non-zero winding fill
-        int x0, w;  x0 = w = 0;
-        ActiveEdge* e = this;
-    
-        while (e) {
-            if (w == 0) {
-                // if we're currently at zero, we need to record the edge start point
-                x0 = e->x; w += e->direction;
-            }
-            else {
-                int x1 = e->x; w += e->direction;
-                // if we went to zero, we need to draw
-                if (w == 0) {
-                    int i = x0 >> FixedShift();
-                    int j = x1 >> FixedShift();
-
-                    if (i < len && j >= 0) {
-                        if (i == j) {
-                            // x0,x1 are the same pixel, so compute combined coverage
-                            scanline[i] = scanline[i] + static_cast<uint8_t>(
-                                    (x1 - x0) * max_weight >> FixedShift()
-                                );
-                        }
-                        else {
-                            if (i >= 0) // add antialiasing for x0
-                                scanline[i] = scanline[i] + static_cast<uint8_t>(
-                                        ((Fixed() - (x0 & FixedMask())) * max_weight) >> FixedShift()
-                                    );
-                            else
-                                i = -1; // clip
-
-                            if (j < len) // add antialiasing for x1
-                                scanline[j] = scanline[j] + static_cast<uint8_t>(
-                                        ((x1 & FixedMask()) * max_weight) >> FixedShift()
-                                    );
-                            else
-                                j = len; // clip
-
-                            for (++i; i < j; ++i) // fill pixels between x0 and x1
-                                scanline[i] = scanline[i] + static_cast<uint8_t>(max_weight);
-                        }
-                    }
-                }
-            }
-            e = e->next;
-        } // while (e)
-    } // FillActiveEdgesV1
-#elif STBTT_RASTERIZER_VERSION == 2
-    // for rasterizer v2
     void HandleClipped(float* scanline, int x, float x0, float y0, float x1, float y1) const noexcept {
         const ActiveEdge& e = *this;
 
@@ -987,11 +883,8 @@ struct ActiveEdge {
                 }
             }
             e = e->next;
-   }
+        }
     }
-#else
-#   error "Unrecognized value of STBTT_RASTERIZER_VERSION"
-#endif
 }; // struct ActiveEdge
 
 
@@ -1195,7 +1088,7 @@ private:
     void RasterizeProcess(Bitmap& out, Point* points, int* wcount, int windings,
             float scale_x, float scale_y, float shift_x, float shift_y,
             int off_x, int off_y, int invert, void* userdata) noexcept;
-    void RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int vsubsample, int off_x, int off_y, void* userdata) noexcept;
+    void RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int off_x, int off_y, void* userdata) noexcept;
     
     
     inline void SortEdges(Edge* p, int n) noexcept { _SortEdgesQuicksort(p, n); _SortEdgesInsSort(p, n); }
@@ -2323,15 +2216,6 @@ void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int win
     float y_scale_inv = invert ? -scale_y : scale_y;
     Edge* e;
     int n, i, j, k, m;
-#if STBTT_RASTERIZER_VERSION == 1
-    int vsubsample = out.h < 8 ? 15 : 5;
-#elif STBTT_RASTERIZER_VERSION == 2
-    int vsubsample = 1;
-#else
-#error "Unrecognized value of STBTT_RASTERIZER_VERSION"
-#endif
-    // vsubsample should divide 255 evenly; otherwise we won't reach full opacity
-
     // now we have to blow out the windings into explicit edge lists
     n = 0;
     for (i = 0; i < windings; ++i)
@@ -2359,9 +2243,9 @@ void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int win
                 a = j, b = k;
             }
             e[n].x0 = p[a].x * scale_x + shift_x;
-            e[n].y0 = (p[a].y * y_scale_inv + shift_y) * vsubsample;
+            e[n].y0 = (p[a].y * y_scale_inv + shift_y);
             e[n].x1 = p[b].x * scale_x + shift_x;
-            e[n].y1 = (p[b].y * y_scale_inv + shift_y) * vsubsample;
+            e[n].y1 = (p[b].y * y_scale_inv + shift_y);
             ++n;
         }
     }
@@ -2371,117 +2255,16 @@ void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int win
     SortEdges(e, n);
 
     // now, traverse the scanlines and find the intersections on each scanline, use xor winding rule
-    RasterizeSortedEdges(out, e, n, vsubsample, off_x, off_y, userdata);
+    RasterizeSortedEdges(out, e, n, off_x, off_y, userdata);
 
     STBTT_free(e, userdata);
 }
 
-void TrueType::RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int vsubsample, int off_x, int off_y, void* userdata) noexcept {
-#if STBTT_RASTERIZER_VERSION == 1
-    HandleHeap hh{};
-    ActiveEdge* active{ nullptr };
-    int y, j = 0;
-    int max_weight = (255 / vsubsample);  // weight per vertical scanline
-    int s; // vertical subsample index
-    unsigned char scanline_data[512], * scanline;
-
-    if (out.w > 512)
-        scanline = (unsigned char*)STBTT_malloc(out.w, userdata);
-    else
-        scanline = scanline_data;
-
-    y = off_y * vsubsample;
-    e[n].y0 = (off_y + out.h) * (float)vsubsample + 1;
-
-    while (j < out.h) {
-        STBTT_memset(scanline, 0, out.w);
-        for (s = 0; s < vsubsample; ++s) {
-            // find center of pixel for this scanline
-            float scan_y = y + 0.5f;
-            ActiveEdge** step = &active;
-
-            // update all active edges;
-            // remove all active edges that terminate before the center of this scanline
-            while (*step) {
-                ActiveEdge* z = *step;
-                if (z->ey <= scan_y) {
-                    *step = z->next; // delete from list
-                    STBTT_assert(z->direction);
-                    z->direction = 0;
-                    hh.Free(z);
-                }
-                else {
-                    z->x += z->dx; // advance to position for current scanline
-                    step = &((*step)->next); // advance through list
-                }
-            }
-
-            // resort the list if needed
-            for (;;) {
-                int changed = 0;
-                step = &active;
-                while (*step && (*step)->next) {
-                    if ((*step)->x > (*step)->next->x) {
-                        ActiveEdge* t = *step;
-                        ActiveEdge* q = t->next;
-
-                        t->next = q->next;
-                        q->next = t;
-                        *step = q;
-                        changed = 1;
-                    }
-                    step = &(*step)->next;
-                }
-                if (!changed) break;
-            }
-
-            // insert all edges that start before the center of this scanline -- omit ones that also end on this scanline
-            while (e->y0 <= scan_y) {
-                if (e->y1 > scan_y) {
-                    ActiveEdge* z = ActiveEdge::NewActive(&hh, e, off_x, scan_y, userdata);
-                    if (z != NULL) {
-                        // find insertion point
-                        if (active == NULL)
-                            active = z;
-                        else if (z->x < active->x) {
-                            // insert at front
-                            z->next = active;
-                            active = z;
-                        }
-                        else {
-                            // find thing to insert AFTER
-                            ActiveEdge* p = active;
-                            while (p->next && p->next->x < z->x)
-                                p = p->next;
-                            // at this point, p->next->x is NOT < z->x
-                            z->next = p->next;
-                            p->next = z;
-                        }
-                    }
-                }
-                ++e;
-            }
-            // now process all active edges in XOR fashion
-            if (active)
-                active->FillActiveEdgesV1(scanline, out.w, max_weight);
-
-            ++y;
-        }
-        STBTT_memcpy(out.pixels + j * out.stride, scanline, out.w);
-        ++j;
-    }
-    hh.Cleanup(userdata);
-
-    if (scanline != scanline_data)
-        STBTT_free(scanline, userdata);
-    
-#elif STBTT_RASTERIZER_VERSION == 2
+void TrueType::RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int off_x, int off_y, void* userdata) noexcept {
     HandleHeap hh{};
     ActiveEdge* active{ nullptr };
     int y, j=0;
     float scanline_data[129], * scanline, * scanline2;
-
-    STBTT__NOTUSED(vsubsample);
 
     if (out.w > 64)
         scanline = reinterpret_cast<float*>(STBTT_malloc((out.w*2+1) * sizeof(float), userdata));
@@ -2569,9 +2352,6 @@ void TrueType::RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int vsubsample,
 
     if (scanline != scanline_data)
         STBTT_free(scanline, userdata);
-#else
-#   error "Unrecognized value of STBTT_RASTERIZER_VERSION"
-#endif
 } // RasterizeSortedEdges
 
 
