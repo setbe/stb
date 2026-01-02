@@ -36,9 +36,6 @@ SOFTWARE.
 // This fork based on stb_truetype.h - v1.26
 // Goal: rewrite the lib in neat freestanding C++.
 
-
-// @TODO split internal logic into corresponding namespace
-
 #ifdef _MSC_VER
 #   define STBTT__NOTUSED(v)  (void)(v)
 #else
@@ -65,829 +62,83 @@ SOFTWARE.
 ////   of C library functions used by stb_truetype, e.g. if you don't
 ////   link with the C runtime library.
 
-#ifdef STBTT_FREESTANDING
-
 // If freestanding: you must provide own math macros.
-// e.g. #define your own STBTT_ifloor/STBTT_iceil() before including this file.
+//      STBTT_ifloor(x)
+//      STBTT_iceil(x)
+//      STBTT_sqrt(x)
+//      STBTT_pow(x, y)
+//      STBTT_fmod(x, y)
+//      STBTT_cos(x)
+//      STBTT_acos(x)
+//      STBTT_fabs(x)
+// 
+// and from lib C:
+//      STBTT_malloc(x,u)
+//      STBTT_free(x,u)
+//      STBTT_strlen(x)
+//      STBTT_memcpy
+//      STBTT_memset
 
-// STBTT_ifloor(x)
-// STBTT_iceil(x)
-// STBTT_sqrt(x)
-// STBTT_pow(x, y)
-// STBTT_fmod(x, y)
-// STBTT_cos(x)
-// STBTT_acos(x)
-// STBTT_fabs(x)
-
+#ifdef STBTT_FREESTANDING
+#   include "stbtt/detail/math_integration.hpp"
 #else // !STBTT_FREESTANDING
-
-// Floor / Ceil
-#   ifndef STBTT_ifloor
+    // ---------- math functions -----------
+#   ifndef STBTT_ifloor             
 #       include <math.h>
 #       define STBTT_ifloor(x)   ((int)floor(x))
 #       define STBTT_iceil(x)    ((int)ceil(x))
 #   endif
-
-// Square root / power
 #   ifndef STBTT_sqrt
 #       include <math.h>
 #       define STBTT_sqrt(x)     sqrt(x)
 #       define STBTT_pow(x,y)    pow(x,y)
 #   endif
-
-// fmod
 #   ifndef STBTT_fmod
 #       include <math.h>
 #       define STBTT_fmod(x,y)   fmod(x,y)
 #   endif
-
-// cos / acos
 #   ifndef STBTT_cos
 #       include <math.h>
 #       define STBTT_cos(x)      cos(x)
 #       define STBTT_acos(x)     acos(x)
 #   endif
-
-// fabs
 #   ifndef STBTT_fabs
 #       include <math.h>
 #       define STBTT_fabs(x)     fabs(x)
 #   endif
-
 #endif // !STBTT_FREESTANDING
 
-
-// ----------------------------------------------
-// Fallbacks for completely math.h-free environments
-// (only compiled if STBTT_FREESTANDING is defined
-//  and user hasn't provided replacements)
-// ----------------------------------------------
 #ifdef STBTT_FREESTANDING
+#   include "stbtt/detail/libc_integration.hpp"
+#else
+    // ---------- libC functions -----------
+#   include <stdlib.h>
+#   include <string.h>
 
-#ifndef STBTT_ifloor
-    static inline int STBTT_ifloor(float x) noexcept {
-        return (int)(x >= 0 ? (int)x : (int)x - (x != (int)x));
-    }
-#   define STBTT_ifloor(x) STBTT_ifloor(x)
-#endif
-
-#ifndef STBTT_iceil
-    static inline int STBTT_iceil(float x) noexcept {
-        int i = (int)x; return (x > i) ? i + 1 : i;
-    }
-#   define STBTT_iceil(x) STBTT_iceil(x)
-#endif
-
-#ifndef STBTT_fabs
-     static inline float STBTT_fabs(float x) noexcept { return x < 0 ? -x : x; }
-     #define STBTT_fabs(x) STBTT_fabs(x)
-#endif
-
-#ifndef STBTT_sqrt
-     // Basic Newton-Raphson sqrt approximation
-     static inline float STBTT_sqrt(float x) noexcept {
-         if (x <= 0) return 0;
-         float r = x;
-         for (int i = 0; i < 5; ++i)
-             r = 0.5f * (r + x / r);
-         return r;
-     }
-     #define STBTT_sqrt(x) STBTT_sqrt(x)
-#endif
-
-#ifndef STBTT_pow
-     static inline float STBTT_pow(float base, float exp) noexcept {
-         // crude exp/log approximation (only for small exp)
-         float result = 1.0f;
-         int e = (int)exp;
-         for (int i = 0; i < e; ++i)
-             result *= base;
-         return result;
-     }
-     #define STBTT_pow(x,y) STBTT_pow(x,y)
-#endif
-
-#ifndef STBTT_fmod
-     static inline float STBTT_fmod(float x, float y) noexcept {
-         return x - (int)(x / y) * y;
-     }
-#    define STBTT_fmod(x,y) STBTT_fmod(x,y)
-#endif
-
-#ifndef STBTT_cos
-     // Taylor approximation of cos(x) for small angles
-     static inline float STBTT_cos(float x) noexcept {
-         const float PI = 3.14159265358979323846f;
-         while (x > PI) x -= 2 * PI;
-         while (x < -PI) x += 2 * PI;
-         float x2 = x * x;
-         return 1.0f - x2 / 2 + x2 * x2 / 24 - x2 * x2 * x2 / 720;
-     }
-#    define STBTT_cos(x) STBTT_cos(x)
-#endif
-
-#ifndef STBTT_acos
-     // Rough acos approximation
-     static inline float STBTT_acos(float x) noexcept {
-         // Clamp
-         if (x < -1) x = -1;
-         if (x > 1) x = 1;
-         // Polynomial approximation
-         float negate = x < 0;
-         x = STBTT_fabs(x);
-         float ret = -0.0187293f;
-         ret = ret * x + 0.0742610f;
-         ret = ret * x - 0.2121144f;
-         ret = ret * x + 1.5707288f;
-         ret = ret * STBTT_sqrt(1.0f - x);
-         return negate ? 3.14159265f - ret : ret;
-     }
-#    define STBTT_acos(x) STBTT_acos(x)
-#endif
-
-#endif // STBTT_FREESTANDING
-
-// ----------------------------------------------
-// #define your own functions "STBTT_malloc" / "STBTT_free" to avoid OS calls.
-// ----------------------------------------------
-
-#ifdef STBTT_FREESTANDING
-
-// STBTT_malloc(x,u)
-// STBTT_free(x,u)
-// STBTT_strlen(x)
-// STBTT_memcpy
-// STBTT_memset
-
-#else // !STBTT_FREESTANDING
-
-#include <stdlib.h>
-#include <string.h>
-
-// Default to malloc/free
-#ifndef STBTT_malloc
-#   define STBTT_malloc(x,u)  ((void)(u), malloc(x))
-#   define STBTT_free(x,u)    ((void)(u), free(x))
-#endif
-
-#ifndef STBTT_strlen
-#   define STBTT_strlen(x)    strlen(x)
-#endif
-
-#ifndef STBTT_memcpy
-#   define STBTT_memcpy       memcpy
-#   define STBTT_memset       memset
-#endif
-
-#endif // !STBTT_FREESTANDING
-
-// ----------------------------------------------
-// Fallbacks for freestanding builds without stdlib
-// Use VirtualAlloc/VirtualFree or mmap/munmap
-// ----------------------------------------------
-#ifdef STBTT_FREESTANDING
-
-#if !defined(STBTT_malloc) || !defined(STBTT_free)
-#if defined(_WIN32)
-#   define WIN32_LEAN_AND_MEAN
-#   include <windows.h>
-
-     static void* STBTT_win_alloc(size_t sz, void* userdata) {
-         const int commit = 0x00001000;
-         const int reserve = 0x00002000;
-         const int page_readwrite = 0x04;
-         (void)userdata;
-         return VirtualAlloc(nullptr, sz, commit | reserve, page_readwrite);
-     }
-
-     static void STBTT_win_free(void* ptr, void* userdata) {
-         const int release = 0x00008000;
-         (void)userdata; 
-         if (ptr) VirtualFree(ptr, 0, release);
-     }
-
+    // Default to malloc/free
 #   ifndef STBTT_malloc
-#       define STBTT_malloc(x,u)  STBTT_win_alloc(x,u)
-#   endif
-#   ifndef STBTT_free
-#       define STBTT_free(x,u)    STBTT_win_free(x,u)
+#      define STBTT_malloc(x,u)  ((void)(u), malloc(x))
+#      define STBTT_free(x,u)    ((void)(u), free(x))
 #   endif
 
-#else // POSIX fallback
-#   include <sys/mman.h>
-#   include <unistd.h>
-
-     static void* STBTT_posix_alloc(size_t sz, void* userdata) {
-         (void)userdata;
-         size_t total = sz + sizeof(size_t);
-         void* p = mmap(nullptr, total, PROT_READ | PROT_WRITE,
-             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         if (p == MAP_FAILED) return nullptr;
-         *((size_t*)p) = total; // keep the size at the beginning of the block
-         // return the pointer after size field
-         return (uint8_t*)p + sizeof(size_t);
-     }
-
-     static void STBTT_posix_free(void* ptr, void* userdata) {
-         (void)userdata;
-         if (!ptr) return;
-         // restore the start address and read the size
-         uint8_t* base = (uint8_t*)ptr - sizeof(size_t);
-         size_t total = *((size_t*)base);
-         munmap(base, total); // return mmap back to the system
-     }
-
-#   ifndef STBTT_malloc
-#       define STBTT_malloc(x,u)  STBTT_posix_alloc(x,u)
-#   endif
-#   ifndef STBTT_free
-#       define STBTT_free(x,u)    STBTT_posix_free(x,u)
+#   ifndef STBTT_strlen
+#      define STBTT_strlen(x)    strlen(x)
 #   endif
 
-#endif // platform
-#endif // missing malloc/free
-
-#ifndef STBTT_strlen
-        static size_t STBTT_strlen(const char* s) {
-            size_t len = 0;
-            while (s && s[len]) ++len;
-            return len;
-        }
-#define STBTT_strlen(x) STBTT_strlen(x)
-#endif
-
-#ifndef STBTT_memcpy
-        static void* STBTT_memcpy(void* dst, const void* src, size_t sz) {
-            unsigned char* d = (unsigned char*)dst;
-            const unsigned char* s = (const unsigned char*)src;
-            while (sz--) *d++ = *s++;
-            return dst;
-        }
-        static void* STBTT_memset(void* dst, int val, size_t sz) {
-            unsigned char* d = (unsigned char*)dst;
-            while (sz--) *d++ = (unsigned char)val;
-            return dst;
-        }
-#define STBTT_memcpy STBTT_memcpy
-#define STBTT_memset STBTT_memset
-#endif
-
-#endif // STBTT_FREESTANDING
-
-namespace stb {
-
-#pragma region enums
-// some of the values for the IDs are below; for more see the truetype spec:
-// Apple:
-//      http://developer.apple.com/textfonts/TTRefMan/RM06/Chap6name.html
-//      (archive) https://web.archive.org/web/20090113004145/http://developer.apple.com/textfonts/TTRefMan/RM06/Chap6name.html
-// Microsoft:
-//      http://www.microsoft.com/typography/otspec/name.htm
-//      (archive) https://web.archive.org/web/20090213110553/http://www.microsoft.com/typography/otspec/name.htm
-enum class PlatformId {
-    Unicode = 0,
-    Mac = 1,
-    Iso = 2,
-    Microsoft = 3
-};
-enum class EncodingIdUnicode {
-    Unicode = 0,
-    Unicode_1_1 = 1,
-    Iso_10646 = 2,
-    Unicode_2_0_Bmp = 3,
-    Unicode_2_0_Full = 4
-};
-enum class EncodingIdMicrosoft {
-    Symbol = 0,
-    Unicode_Bmp = 1,
-    ShiftJis = 2,
-    Unicode_Full = 10
-};
-enum class EncodingIdMac { // encodingID for STBTT_PLATFORM_ID_MAC; same as Script Manager codes
-    Roman = 0,              Arabic = 4,
-    Japanese = 1,           Hebrew = 5,
-    TraditionalChinese = 2, Greek = 6,
-    Korean = 3,             Russian = 7
-};
-enum class LanguageIdMicrosoft { // same as LCID...
-    // problematic because there are e.g. 16 english LCIDs and 16 arabic LCIDs
-    English = 0x0409, Italian = 0x0410,
-    Chinese = 0x0804, Japanese = 0x0411,
-    Dutch = 0x0413,   Korean = 0x0412,
-    French = 0x040c,  Russian = 0x0419,
-    German = 0x0407,  Spanish = 0x0409,
-    Hebrew = 0x040d,  Swedish = 0x041D
-};
-enum class LanguageIdMac { // languageID for STBTT_PLATFORM_ID_MAC
-    English = 0, Japanese = 11,
-    Arabic = 12, Korean = 23,
-    Dutch = 4,   Russian = 32,
-    French = 1,  Spanish = 6,
-    German = 2,  Swedich = 5,
-    Hebrew = 10, SimplifiedChinese = 33,
-    Italian = 3, TraditionalChinese = 19
-};
-#pragma endregion
-
-// private structure
-struct Buf {
-    uint8_t* data;
-    int cursor;
-    int size;
-
-    inline uint8_t Get8() noexcept {
-        if (cursor >= size) return 0;
-        return data[cursor++];
-    }
-    inline uint8_t Peek8() const noexcept {
-        if (cursor >= size) return 0;
-        return data[cursor];
-    }
-    inline void Seek(int o) noexcept {
-        STBTT_assert(!(o > size || o < 0));
-        cursor = (o > size || o < 0) ? size : o;
-    }
-    inline void Skip(int o) noexcept { Seek(cursor + o); }
-
-    inline uint32_t Get(int n) noexcept {
-        STBTT_assert(n >= 1 && n <= 4);
-        uint32_t v = 0;
-        for (int i = 0; i < n; ++i)
-            v = (v << 8) | Get8();
-        return v;
-    }
-    inline uint32_t Get16() noexcept { return Get(2); }
-    inline uint32_t Get32() noexcept { return Get(4); }
-
-    inline Buf Range(int o, int s) const noexcept {
-        Buf r{};
-        if (o < 0 || s < 0 || o > size || s > size - o)
-            return r;
-        r.data = data + o;
-        r.size = s;
-        return r;
-    }
-
-    inline Buf CffGetIndex() noexcept {
-        int count, start, offsize;
-        start = cursor;
-        count = Get16();
-        if (count) {
-            offsize = Get8();
-            STBTT_assert(offsize >= 1 && offsize <= 4);
-            Skip(offsize * count);
-            Skip(Get(offsize) - 1);
-        }
-        return Range(start, cursor - start);
-    }
-
-    inline uint32_t CffInt() noexcept {
-        int b0 = Get8();
-        if (b0 >= 32 && b0 <= 246)       return b0 - 139;
-        else if (b0 >= 247 && b0 <= 250) return (b0 - 247) * 256 + Get8() + 108;
-        else if (b0 >= 251 && b0 <= 254) return -(b0 - 251) * 256 - Get8() - 108;
-        else if (b0 == 28)               return Get16();
-        else if (b0 == 29)               return Get32();
-        STBTT_assert(0);
-        return 0;
-    }
-
-    inline void CffSkipOperand() noexcept {
-        int v, b0 = Peek8();
-        STBTT_assert(b0 >= 28);
-        if (b0 != 30) {
-            CffInt();
-        } else {
-            Skip(1);
-            while (cursor < size) {
-                v = Get8();
-                if ((v & 0xF) == 0xF || (v >> 4) == 0xF)
-                    break;
-            }
-        }
-    }
-
-    inline Buf DictGet(int key) noexcept {
-        Seek(0);
-        while (cursor < size) {
-            int start = cursor, end, op;
-            while (Peek8() >= 28) CffSkipOperand();
-            end = cursor;
-            op = Get8();
-            if (op == 12)  op = Get8() | 0x100;
-            if (op == key)
-                return Range(start, end - start);
-        }
-        return Range(0, 0);
-    }
-
-    inline void DictGetInts(int key, int outcount, uint32_t* out) noexcept {
-        int i;
-        Buf operands = DictGet(key);
-        for (i = 0; i < outcount && operands.cursor < operands.size; i++)
-            out[i] = operands.CffInt();
-    }
-
-    inline int CffIndexCount() noexcept {
-        Seek(0);
-        return Get16();
-    }
-
-    // Overloaded method
-    inline Buf CffGetIndex(int i) noexcept {
-        int count, offsize, start, end;
-        Seek(0);
-        count = Get16();
-        offsize = Get8();
-        STBTT_assert(i >= 0 && i < count);
-        STBTT_assert(offsize >= 1 && offsize <= 4);
-        Skip(i * offsize);
-        start = Get(offsize);
-        end = Get(offsize);
-        return Range(2 + (count + 1) * offsize + start,
-            end - start);
-    }
+#   ifndef STBTT_memcpy
+#      define STBTT_memcpy       memcpy
+#      define STBTT_memset       memset
+#   endif
+#endif // ifndef STBTT_FREESTANDING
 
 
-    static inline Buf GetSubr(Buf& idx, int n) noexcept {
-        int count = idx.CffIndexCount();
-        int bias = 107;
-        if      (count >= 33900) bias = 32768;
-        else if (count >= 1240)  bias = 1131;
-
-        n += bias;
-        return (n < 0 || n >= count) ? Buf{}
-            : idx.CffGetIndex(n);
-    }
-
-    static inline Buf GetSubrs(Buf& cff, Buf& fontdict) noexcept {
-        uint32_t subrsoff{};
-        uint32_t private_loc[2]{};
-
-        fontdict.DictGetInts(18, 2, private_loc);
-        if (!private_loc[1] || !private_loc[0])
-            return Buf{};
-
-        Buf pdict = cff.Range(private_loc[1], private_loc[0]);
-        pdict.DictGetInts(19, 1, &subrsoff);
-        if (!subrsoff)
-            return Buf{};
-
-        cff.Seek(private_loc[1] + subrsoff);
-        return cff.CffGetIndex();
-    }
-};
-
-struct HandleHeap {
-    struct Chunk { Chunk* next; /* linked list of memory chunks */ };
-
-    Chunk* head{ nullptr }; // head of chunk list
-    void* first_free{ nullptr }; // free list pointer
-    int num_remaining_in_head_chunk{ 0 }; // remaining blocks in current chunk
-
-    void* Alloc(size_t size, void* userdata) noexcept {
-        if (first_free) {
-            void* p = first_free;
-            first_free = *(void**)p;
-            return p;
-        } else { // no free space left
-            if (num_remaining_in_head_chunk == 0) {
-                // smaller objects -> more per chunk, larger -> fewer
-                int count = (size < 32 ? 2000 : size < 128 ? 800 : 100);
-                Chunk* c = reinterpret_cast<Chunk*>(
-                    STBTT_malloc(sizeof(Chunk) + size * count, userdata));
-                if (c == nullptr)
-                    return nullptr;
-                c->next = head;
-                head = c;
-                num_remaining_in_head_chunk = count;
-            }
-            // return a block from the current chunk
-            --this->num_remaining_in_head_chunk;
-            return reinterpret_cast<char*>(head) + sizeof(Chunk)
-                + size * num_remaining_in_head_chunk;
-        }
-    } // Alloc
-
-    void Free(void* p) noexcept {
-        *(void**) p = first_free;
-        first_free = p;
-    }
-
-    void Cleanup(void* userdata) noexcept {
-        while (head) {
-            Chunk* n = head->next;
-            STBTT_free(head, userdata);
-            head = n;
-        }
-    }
-};
-
-struct Edge {
-    float x0, y0, x1, y1; bool invert;
-    // Helper:  e[i].y0  <  e[o].y0
-    static bool CompareY0(Edge* e, size_t i, size_t o) noexcept { return e[i].y0 < e[o].y0; }
-};
-
-struct ActiveEdge {
-    ActiveEdge* next;
-    float fx, fdx, fdy;
-    float direction;
-    float sy;
-    float ey;
-
-    static inline ActiveEdge* NewActive(HandleHeap* hh, Edge* e, int off_x, float start_point, void* userdata) noexcept {
-        ActiveEdge* z = reinterpret_cast<ActiveEdge*>(hh->Alloc(sizeof(*z), userdata));
-        float dxdy = (e->x1 - e->x0) / (e->y1 - e->y0);
-        STBTT_assert(z != nullptr);
-        //STBTT_assert(e->y0 <= start_point);
-        if (!z) return z;
-        z->fdx = dxdy;
-        z->fdy = dxdy != 0.f ? (1.f/dxdy) : 0.f;
-        z->fx = e->x0 + dxdy * (start_point - e->y0);
-        z->fx -= off_x;
-        z->direction = e->invert ? 1.f : -1.f;
-        z->sy = e->y0;
-        z->ey = e->y1;
-        z->next = 0;
-        return z;
-     } // NewActive
-
-    void HandleClipped(float* scanline, int x, float x0, float y0, float x1, float y1) const noexcept {
-        const ActiveEdge& e = *this;
-
-        if (y0 == y1) return;
-        STBTT_assert(y0 < y1);
-        STBTT_assert(e.sy <= e.ey);
-        if (y0 > e.ey) return;
-        if (y1 < e.sy) return;
-        if (y0 < e.sy) {
-            x0 += (x1 - x0) * (e.sy - y0) / (y1 - y0);
-            y0 = e.sy;
-        }
-        if (y1 > e.ey) {
-            x1 += (x1 - x0) * (e.ey - y1) / (y1 - y0);
-            y1 = e.ey;
-        }
-
-        if (x0 == x)
-            STBTT_assert(x1 <= x + 1);
-        else if (x0 == x + 1)
-            STBTT_assert(x1 >= x);
-        else if (x0 <= x)
-            STBTT_assert(x1 <= x);
-        else if (x0 >= x + 1)
-            STBTT_assert(x1 >= x + 1);
-        else
-            STBTT_assert(x1 >= x && x1 <= x + 1);
-
-        if (x0 <= x && x1 <= x)
-            scanline[x] += e.direction * (y1 - y0);
-        else if (x0 >= x + 1 && x1 >= x + 1)
-            ; // are we doing nothing here?
-        else {
-            STBTT_assert(x0 >= x && x0 <= x + 1 && x1 >= x && x1 <= x + 1);
-            scanline[x] += e.direction * (y1 - y0) * (1 - ((x0 - x) + (x1 - x)) / 2); // coverage = 1 - average x position
-        }
-    }
-
-    void FillActiveEdgesV2(float* scanline, float* scanline_fill, int len, float y_top) noexcept {
-        auto SizedTrapezoidArea = [](float h, float top_w, float bottom_w) noexcept {
-            STBTT_assert(top_w >= 0 && bottom_w >= 0);
-            return (top_w + bottom_w) / 2.f * h;
-        };
-        auto PositionTrapezoidArea = [SizedTrapezoidArea](float h, float tx0, float tx1, float bx0, float bx1) noexcept {
-            return SizedTrapezoidArea(h, tx1-tx0, bx1-bx0);
-        };
-        auto SizedTriangleArea = [](float h, float w) noexcept { return h * w / 2; };
-        
-        float y_bottom = y_top + 1;
-        ActiveEdge* e = this;
-
-        while (e) {
-            // brute force every pixel
-
-            // compute intersection points with top & bottom
-            STBTT_assert(e->ey >= y_top);
-
-            if (e->fdx == 0) {
-                float x0 = e->fx;
-                if (x0 < len) {
-                    if (x0 >= 0) {
-                        e->HandleClipped(scanline,        static_cast<int>(x0),   x0, y_top, x0, y_bottom);
-                        e->HandleClipped(scanline_fill-1, static_cast<int>(x0+1), x0, y_top, x0, y_bottom);
-                    }
-                    else {
-                        e->HandleClipped(scanline_fill-1, 0, x0, y_top, x0, y_bottom);
-                    }
-                }
-            }
-            else {
-                float x0 = e->fx;
-                float dx = e->fdx;
-                float xb = x0 + dx;
-                float x_top, x_bottom;
-                float sy0, sy1;
-                float dy = e->fdy;
-                STBTT_assert(e->sy <= y_bottom && e->ey >= y_top);
-
-                // compute endpoints of line segment clipped to this scanline (if the
-                // line segment starts on this scanline. x0 is the intersection of the
-                // line with y_top, but that may be off the line segment.
-                if (e->sy > y_top) {
-                    x_top = x0 + dx * (e->sy - y_top);
-                    sy0 = e->sy;
-                }
-                else {
-                    x_top = x0;
-                    sy0 = y_top;
-                }
-                if (e->ey < y_bottom) {
-                    x_bottom = x0 + dx * (e->ey - y_top);
-                    sy1 = e->ey;
-                }
-                else {
-                    x_bottom = xb;
-                    sy1 = y_bottom;
-                }
-
-                if (x_top >= 0 && x_bottom >= 0 && x_top < len && x_bottom < len) {
-                    // from here on, we don't have to range check x values
-
-                    if (static_cast<int>(x_top) == static_cast<int>(x_bottom)) {
-                        float height;
-                        // simple case, only spans one pixel
-                        int x = static_cast<int>(x_top);
-                        height = (sy1 - sy0) * e->direction;
-                        STBTT_assert(x >= 0 && x < len);
-                        scanline[x]      += PositionTrapezoidArea(height, x_top, x + 1.0f, x_bottom, x + 1.0f);
-                        scanline_fill[x] += height; // everything right of this pixel is filled
-                    }
-                    else {
-                        int x, x1, x2;
-                        float y_crossing, y_final, step, sign, area;
-                        // covers 2+ pixels
-                        if (x_top > x_bottom) {
-                            // flip scanline vertically; signed area is the same
-                            float t;
-                            sy0 = y_bottom - (sy0 - y_top);
-                            sy1 = y_bottom - (sy1 - y_top);
-                            t = sy0, sy0 = sy1, sy1 = t;
-                            t = x_bottom, x_bottom = x_top, x_top = t;
-                            dx = -dx;
-                            dy = -dy;
-                            t = x0, x0 = xb, xb = t;
-                        }
-                        STBTT_assert(dy >= 0);
-                        STBTT_assert(dx >= 0);
-
-                        x1 = static_cast<int>(x_top);
-                        x2 = static_cast<int>(x_bottom);
-                        // compute intersection with y axis at x1+1
-                        y_crossing = y_top + dy * (x1 + 1 - x0);
-
-                        // compute intersection with y axis at x2
-                        y_final = y_top + dy * (x2 - x0);
-
-                        //           x1    x_top                            x2    x_bottom
-                        //     y_top  +------|-----+------------+------------+--------|---+------------+
-                        //            |            |            |            |            |            |
-                        //            |            |            |            |            |            |
-                        //       sy0  |      Txxxxx|............|............|............|............|
-                        // y_crossing |            *xxxxx.......|............|............|............|
-                        //            |            |     xxxxx..|............|............|............|
-                        //            |            |     /-   xx*xxxx........|............|............|
-                        //            |            | dy <       |    xxxxxx..|............|............|
-                        //   y_final  |            |     \-     |          xx*xxx.........|............|
-                        //       sy1  |            |            |            |   xxxxxB...|............|
-                        //            |            |            |            |            |            |
-                        //            |            |            |            |            |            |
-                        //  y_bottom  +------------+------------+------------+------------+------------+
-                        //
-                        // goal is to measure the area covered by '.' in each pixel
-
-                        // if x2 is right at the right edge of x1, y_crossing can blow up, github #1057
-                        // @TODO: maybe test against sy1 rather than y_bottom?
-                        if (y_crossing > y_bottom)
-                            y_crossing = y_bottom;
-
-                        sign = e->direction;
-
-                        // area of the rectangle covered from sy0..y_crossing
-                        area = sign * (y_crossing - sy0);
-
-                        // area of the triangle (x_top,sy0), (x1+1,sy0), (x1+1,y_crossing)
-                        scanline[x1] += SizedTriangleArea(area, x1 + 1 - x_top);
-
-                        // check if final y_crossing is blown up; no test case for this
-                        if (y_final > y_bottom) {
-                            y_final = y_bottom;
-                            dy = (y_final - y_crossing) / (x2 - (x1 + 1)); // if denom=0, y_final = y_crossing, so y_final <= y_bottom
-                        }
-
-                        // in second pixel, area covered by line segment found in first pixel
-                        // is always a rectangle 1 wide * the height of that line segment; this
-                        // is exactly what the variable 'area' stores. it also gets a contribution
-                        // from the line segment within it. the THIRD pixel will get the first
-                        // pixel's rectangle contribution, the second pixel's rectangle contribution,
-                        // and its own contribution. the 'own contribution' is the same in every pixel except
-                        // the leftmost and rightmost, a trapezoid that slides down in each pixel.
-                        // the second pixel's contribution to the third pixel will be the
-                        // rectangle 1 wide times the height change in the second pixel, which is dy.
-
-                        step = sign * dy * 1; // dy is dy/dx, change in y for every 1 change in x,
-                        // which multiplied by 1-pixel-width is how much pixel area changes for each step in x
-                        // so the area advances by 'step' every time
-
-                        for (x = x1 + 1; x < x2; ++x) {
-                            scanline[x] += area + step / 2; // area of trapezoid is 1*step/2
-                            area += step;
-                        }
-                        STBTT_assert(STBTT_fabs(area) <= 1.01f); // accumulated error from area += step unless we round step down
-                        STBTT_assert(sy1 > y_final - 0.01f);
-
-                        // area covered in the last pixel is the rectangle from all the pixels to the left,
-                        // plus the trapezoid filled by the line segment in this pixel all the way to the right edge
-                        scanline[x2] += area + sign * PositionTrapezoidArea(sy1 - y_final, static_cast<float>(x2), x2 + 1.0f, x_bottom, x2 + 1.0f);
-
-                        // the rest of the line is filled based on the total height of the line segment in this pixel
-                        scanline_fill[x2] += sign * (sy1 - sy0);
-                    }
-                }
-                else {
-                    // if edge goes outside of box we're drawing, we require
-                    // clipping logic. since this does not match the intended use
-                    // of this library, we use a different, very slow brute
-                    // force implementation
-                    // note though that this does happen some of the time because
-                    // x_top and x_bottom can be extrapolated at the top & bottom of
-                    // the shape and actually lie outside the bounding box
-                    int x;
-                    for (x = 0; x < len; ++x) {
-                        // cases:
-                        //
-                        // there can be up to two intersections with the pixel. any intersection
-                        // with left or right edges can be handled by splitting into two (or three)
-                        // regions. intersections with top & bottom do not necessitate case-wise logic.
-                        //
-                        // the old way of doing this found the intersections with the left & right edges,
-                        // then used some simple logic to produce up to three segments in sorted order
-                        // from top-to-bottom. however, this had a problem: if an x edge was epsilon
-                        // across the x border, then the corresponding y position might not be distinct
-                        // from the other y segment, and it might ignored as an empty segment. to avoid
-                        // that, we need to explicitly produce segments based on x positions.
-
-                        // rename variables to clearly-defined pairs
-                        float y0 = y_top;
-                        float x1 = static_cast<float>(x);
-                        float x2 = static_cast<float>(x+1);
-                        float x3 = xb;
-                        float y3 = y_bottom;
-
-                        // x = e->x + e->dx * (y-y_top)
-                        // (y-y_top) = (x - e->x) / e->dx
-                        // y = (x - e->x) / e->dx + y_top
-                        float y1 = (x - x0) / dx + y_top;
-                        float y2 = (x + 1 - x0) / dx + y_top;
-
-                        if (x0 < x1 && x3 > x2) {         // three segments descending down-right
-                            e->HandleClipped(scanline, x, x0, y0, x1, y1);
-                            e->HandleClipped(scanline, x, x1, y1, x2, y2);
-                            e->HandleClipped(scanline, x, x2, y2, x3, y3);
-                        }
-                        else if (x3 < x1 && x0 > x2) {  // three segments descending down-left
-                            e->HandleClipped(scanline, x, x0, y0, x2, y2);
-                            e->HandleClipped(scanline, x, x2, y2, x1, y1);
-                            e->HandleClipped(scanline, x, x1, y1, x3, y3);
-                        }
-                        else if (x0 < x1 && x3 > x1) {  // two segments across x, down-right
-                            e->HandleClipped(scanline, x, x0, y0, x1, y1);
-                            e->HandleClipped(scanline, x, x1, y1, x3, y3);
-                        }
-                        else if (x3 < x1 && x0 > x1) {  // two segments across x, down-left
-                            e->HandleClipped(scanline, x, x0, y0, x1, y1);
-                            e->HandleClipped(scanline, x, x1, y1, x3, y3);
-                        }
-                        else if (x0 < x2 && x3 > x2) {  // two segments across x+1, down-right
-                            e->HandleClipped(scanline, x, x0, y0, x2, y2);
-                            e->HandleClipped(scanline, x, x2, y2, x3, y3);
-                        }
-                        else if (x3 < x2 && x0 > x2) {  // two segments across x+1, down-left
-                            e->HandleClipped(scanline, x, x0, y0, x2, y2);
-                            e->HandleClipped(scanline, x, x2, y2, x3, y3);
-                        }
-                        else {  // one segment
-                            e->HandleClipped(scanline, x, x0, y0, x3, y3);
-                        }
-                    }
-                }
-            }
-            e = e->next;
-        }
-    }
-}; // struct ActiveEdge
+#include "stbtt/detail/enums.hpp"
+#include "stbtt/detail/buf.hpp"
+#include "stbtt/detail/chunk_pool.hpp"
+#include "stbtt/detail/edges.hpp"
 
 
+namespace stbtt {
 // The following structure is defined publicly so you can declare one on
 // the stack or as a global or etc, but you should treat it as opaque.
 struct FontInfo {
@@ -901,33 +152,38 @@ struct FontInfo {
     int index_map;              // a cmap mapping for our chosen character encoding
     int index_to_loc_format;    // format needed to map from glyph index to glyph
 
-    Buf cff;                    // cff font data
-    Buf charstrings;            // the charstring index
-    Buf g_subrs;                // global charstring subroutines index
-    Buf subrs;                  // private charstring subroutines index
-    Buf fontdicts;              // array of font dicts
-    Buf fdselect;               // map from glyph to fontdict
-};
-
-enum class VertexType {
-    Move = 1, // move-to
-    Line = 2, // line-to
-    Curve = 3, // quadratic Bezier curve-to
-    Cubic = 4  // cubic Bezier curve-to
+    detail::Buf cff;                    // cff font data
+    detail::Buf charstrings;            // the charstring index
+    detail::Buf g_subrs;                // global charstring subroutines index
+    detail::Buf subrs;                  // private charstring subroutines index
+    detail::Buf fontdicts;              // array of font dicts
+    detail::Buf fdselect;               // map from glyph to fontdict
 };
 
 struct Vertex {
-    using PrimitiveType = int16_t;
-    PrimitiveType x,y,cx,cy,cx1,cy1;
-    unsigned char type, padding;
+    enum class Kind {
+        Move = 1, // move-to
+        Line = 2, // line-to
+        Curve = 3, // quadratic Bezier curve-to
+        Cubic = 4  // cubic Bezier curve-to
+    };
+    Kind kind{};
 
-    void Update(VertexType type_, int32_t x_,  int32_t y_, 
-                                  int32_t cx_, int32_t cy_) noexcept {
-        type = static_cast<unsigned char>(type_);
-        x = static_cast<PrimitiveType>(x_);
-        y = static_cast<PrimitiveType>(y_);
-        cx = static_cast<PrimitiveType>(cx_);
-        cy = static_cast<PrimitiveType>(cy_);
+    // CFF/Type2 theoretically could contain wider numbers than 16-bit.
+    using value_t = int16_t;
+    value_t x{}, y{};
+    value_t cx{}, cy{};
+    value_t cx1{}, cy1{};
+
+    void Update(Kind kind_, int32_t x_,  int32_t y_,
+                            int32_t cx_, int32_t cy_) noexcept {
+        kind = kind_;
+
+        // clamp from i32 to i16
+        x = static_cast<value_t>(x_);
+        y = static_cast<value_t>(y_);
+        cx = static_cast<value_t>(cx_);
+        cy = static_cast<value_t>(cy_);
     }
 };
 
@@ -957,40 +213,42 @@ struct CurveShape {
         started = 1;
     }
 
-    inline void V(VertexType type_,
+    inline void V(Vertex::Kind type_,
            int32_t x_,   int32_t y_,
            int32_t cx_,  int32_t cy_,
            int32_t cx1_, int32_t cy1_) noexcept {
         if (bounds) {
             TrackVertex(x_, y_);
-            if (type_ == VertexType::Cubic) {
+            if (type_ == Vertex::Kind::Cubic) {
                 TrackVertex(cx_, cy_);
                 TrackVertex(cx1_, cy1_);
             }
         } else {
             p_vertices[num_vertices].Update(type_, x_, y_, cx_, cy_);
-            p_vertices[num_vertices].cx1 = static_cast<Vertex::PrimitiveType>(cx1_);
-            p_vertices[num_vertices].cy1 = static_cast<Vertex::PrimitiveType>(cy1_);
+            p_vertices[num_vertices].cx1 = static_cast<Vertex::value_t>(cx1_);
+            p_vertices[num_vertices].cy1 = static_cast<Vertex::value_t>(cy1_);
         }
         ++num_vertices;
     }
+
     inline void CloseShape() noexcept {
         if (first_x != x || first_y != y)
-            V(VertexType::Line, static_cast<int32_t>(first_x),
+            V(Vertex::Kind::Line, static_cast<int32_t>(first_x),
                                 static_cast<int32_t>(first_y), 0, 0, 0, 0);
     }
+
     inline void RMoveTo(float dx, float dy) noexcept {
         CloseShape();
         first_x = x = x+dx;
         first_y = y = y+dy;
-        V(VertexType::Move, static_cast<int32_t>(x),
+        V(Vertex::Kind::Move, static_cast<int32_t>(x),
                             static_cast<int32_t>(y), 0, 0, 0, 0);
     }
 
     inline void RLineTo(float dx, float dy) noexcept {
         x += dx;
         y += dy;
-        V(VertexType::Line, static_cast<int32_t>(x),
+        V(Vertex::Kind::Line, static_cast<int32_t>(x),
                             static_cast<int32_t>(y), 0, 0, 0, 0);
     }
 
@@ -1003,7 +261,7 @@ struct CurveShape {
         float cy2 = cy1 + dx2;
         x = cx2 + dx3;
         y = cy2 + dy3;
-        V(VertexType::Cubic,
+        V(Vertex::Kind::Cubic,
             static_cast<int32_t>(x),   static_cast<int32_t>(y),
             static_cast<int32_t>(cx1), static_cast<int32_t>(cy1),
             static_cast<int32_t>(cx2), static_cast<int32_t>(cy2));
@@ -1067,7 +325,7 @@ struct TrueType {
 private:
     inline int GetGlyfOffset(int glyph_index) const noexcept;
     inline uint32_t FindTable(const char* tag) const noexcept;
-    inline Buf GetCidGlyphSubrs(int glyph_index) noexcept;
+    inline detail::Buf GetCidGlyphSubrs(int glyph_index) noexcept;
     inline int RunCharString(int glyph_index, CurveShape&) noexcept;
 
     inline int CloseShape(Vertex* vertices, int num_vertices, bool was_off, bool start_off,
@@ -1088,12 +346,12 @@ private:
     void RasterizeProcess(Bitmap& out, Point* points, int* wcount, int windings,
             float scale_x, float scale_y, float shift_x, float shift_y,
             int off_x, int off_y, int invert, void* userdata) noexcept;
-    void RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int off_x, int off_y, void* userdata) noexcept;
+    void RasterizeSortedEdges(Bitmap& out, detail::Edge* e, int n, int off_x, int off_y, void* userdata) noexcept;
     
     
-    inline void SortEdges(Edge* p, int n) noexcept { _SortEdgesQuicksort(p, n); _SortEdgesInsSort(p, n); }
-    inline void _SortEdgesQuicksort(Edge* p, int n) noexcept;
-    inline void _SortEdgesInsSort(Edge* p, int n) noexcept;
+    inline void SortEdges(detail::Edge* p, int n) noexcept { _SortEdgesQuicksort(p, n); _SortEdgesInsSort(p, n); }
+    inline void _SortEdgesQuicksort(detail::Edge* p, int n) noexcept;
+    inline void _SortEdgesInsSort(detail::Edge* p, int n) noexcept;
 
 
     // --- Parsing helpers ---
@@ -1143,7 +401,7 @@ inline bool TrueType::ReadBytes(uint8_t* font_buffer) noexcept {
     if (fi.glyf) {
         if (!fi.loca) return false; // required for truetype
     } else {
-        Buf b, topdict, topdictidx;
+        detail::Buf b, topdict, topdictidx;
         uint32_t cstype = 2, charstrings = 0, fdarrayoff = 0, fdselectoff = 0;
         uint32_t cff;
 
@@ -1171,7 +429,7 @@ inline bool TrueType::ReadBytes(uint8_t* font_buffer) noexcept {
         topdict.DictGetInts(0x100 | 6, 1, &cstype);
         topdict.DictGetInts(0x100 | 36, 1, &fdarrayoff);
         topdict.DictGetInts(0x100 | 37, 1, &fdselectoff);
-        fi.subrs = Buf::GetSubrs(b, topdict);
+        fi.subrs = detail::Buf::GetSubrs(b, topdict);
 
         // we only support Type 2 charstrings
         if (cstype != 2) return false;
@@ -1197,6 +455,8 @@ inline bool TrueType::ReadBytes(uint8_t* font_buffer) noexcept {
     // find a cmap encoding table we understand *now* to avoid searching
     // later. (todo: could make this installable)
     // the same regardless of glyph.
+    using detail::PlatformId;
+    using detail::EncodingIdMicrosoft;
     num_tables = Ushort(fi.data + cmap + 2);
     fi.index_map = 0;
     for (i = 0; i < num_tables; ++i) {
@@ -1437,8 +697,8 @@ inline uint32_t TrueType::FindTable(const char* tag) const noexcept {
     return 0;
 }
 
-inline Buf TrueType::GetCidGlyphSubrs(int glyph_index) noexcept {
-    Buf fd_select = fi.fdselect; // copy
+inline detail::Buf TrueType::GetCidGlyphSubrs(int glyph_index) noexcept {
+    detail::Buf fd_select = fi.fdselect; // copy
     int nranges, start, end, v, fmt;
     int fdselector = -1;
 
@@ -1462,10 +722,10 @@ inline Buf TrueType::GetCidGlyphSubrs(int glyph_index) noexcept {
             start = end;
         }
     }
-    if (fdselector == -1) return Buf{};
+    if (fdselector == -1) return detail::Buf{};
 
-    Buf fontdict = fi.fontdicts.CffGetIndex(fdselector);
-    return Buf::GetSubrs(fi.cff, fontdict);
+    detail::Buf fontdict = fi.fontdicts.CffGetIndex(fdselector);
+    return detail::Buf::GetSubrs(fi.cff, fontdict);
 }
 
 inline int TrueType::RunCharString(int glyph_index, CurveShape& c) noexcept {
@@ -1475,10 +735,10 @@ inline int TrueType::RunCharString(int glyph_index, CurveShape& c) noexcept {
     
     int v, i, b0, clear_stack;
     float s[48]{};
-    Buf subr_stack[10];
-    Buf subrs = fi.subrs;
+    detail::Buf subr_stack[10];
+    detail::Buf subrs = fi.subrs;
     
-    Buf b;
+    detail::Buf b;
     float f;
 
 #define STBTT__CSERR(s) (0)
@@ -1610,7 +870,7 @@ inline int TrueType::RunCharString(int glyph_index, CurveShape& c) noexcept {
             v = (int)s[--sp];
             if (subr_stack_height >= 10) return STBTT__CSERR("recursion limit");
             subr_stack[subr_stack_height++] = b;
-            b = Buf::GetSubr(b0 == 0x0A ? subrs : fi.g_subrs, v);
+            b = detail::Buf::GetSubr(b0 == 0x0A ? subrs : fi.g_subrs, v);
             if (b.size == 0) return STBTT__CSERR("subr not found");
             b.cursor = 0;
             clear_stack = 0;
@@ -1737,25 +997,23 @@ inline int TrueType::RunCharString(int glyph_index, CurveShape& c) noexcept {
 inline int TrueType::CloseShape(Vertex* vertices, int num_vertices, bool was_off, bool start_off,
     int32_t sx, int32_t sy, int32_t scx, int32_t scy, int32_t cx, int32_t cy) noexcept {
     STBTT_assert(vertices);
+
     if (start_off) {
-        if (was_off) {
-            vertices[num_vertices++].Update(VertexType::Curve, (cx + scx) >> 1, (cy + scy) >> 1, cx, cy);
-        }
-        vertices[num_vertices++].Update(VertexType::Curve, sx, sy, scx, scy);
+        if (was_off)
+            vertices[num_vertices++].Update(Vertex::Kind::Curve, (cx + scx) >> 1, (cy + scy) >> 1, cx, cy);
+        vertices[num_vertices++].Update(Vertex::Kind::Curve, sx, sy, scx, scy);
     } else {
-        if (was_off) {
-            vertices[num_vertices++].Update(VertexType::Curve, sx, sy, cx, cy);
-        }
-        vertices[num_vertices++].Update(VertexType::Line, sx, sy, 0, 0);
+        if (was_off)
+            vertices[num_vertices++].Update(Vertex::Kind::Curve, sx, sy, cx, cy);
+        vertices[num_vertices++].Update(Vertex::Kind::Line, sx, sy, 0, 0);
     }
     return num_vertices;
 }
 
 inline int TrueType::GetGlyphShape(int glyph_index, Vertex** pvertices) noexcept {
-    if (!fi.cff.size)
-        return GetGlyphShapeTT(glyph_index, pvertices);
-    else
-        return GetGlyphShapeT2(glyph_index, pvertices);
+    return fi.cff.size ?
+        GetGlyphShapeT2(glyph_index, pvertices)
+        : GetGlyphShapeTT(glyph_index, pvertices);
 }
 
 inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexcept {
@@ -1808,13 +1066,13 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
             } else {
                 --flagcount;
             }
-            vertices[off+i].type = flags;
+            vertices[off+i].kind = static_cast<Vertex::Kind>(flags);
         }
 
         // now load x coordinates
         x=0;
         for (i=0; i < n; ++i) {
-            flags = vertices[off+i].type;
+            flags = static_cast<uint8_t>(vertices[off+i].kind);
             if (flags & 2) {
                 int16_t dx = *points++;
                 x += (flags & 16) ? dx : -dx; // ???
@@ -1831,7 +1089,7 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
         // now load y coordinates
         y = 0;
         for (i = 0; i < n; ++i) {
-            flags = vertices[off+i].type;
+            flags = static_cast<uint8_t>(vertices[off+i].kind);
             if (flags & 4) {
                 int16_t dy = *points++;
                 y += (flags & 32) ? dy : -dy; // ???
@@ -1847,15 +1105,15 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
         // now convert them to our format
         num_vertices = 0;
         sx = sy = cx = cy = scx = scy = 0;
+
         for (i = 0; i < n; ++i) {
-            flags = vertices[off+i].type;
-            x     = static_cast<int16_t>(vertices[off+i].x);
-            y     = static_cast<int16_t>(vertices[off+i].y);
+            flags = static_cast<uint8_t>(vertices[off+i].kind);
+            x = static_cast<int16_t>(vertices[off+i].x);
+            y = static_cast<int16_t>(vertices[off+i].y);
 
             if (next_move == i) {
-                if (i != 0) num_vertices =
-                    CloseShape(vertices, num_vertices, was_off, start_off,
-                               sx,sy, scx,scy, cx,cy);
+                if (i != 0)
+                    num_vertices = CloseShape(vertices, num_vertices, was_off, start_off, sx,sy, scx,scy, cx,cy);
                 // now start the new one
                 start_off = !static_cast<bool>(flags & 1);
                 if (start_off) {
@@ -1863,7 +1121,7 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
                     // where we can start, and we need to save some state for when we wraparound.
                     scx = x;
                     scy = y;
-                    if (!(vertices[off+i+1].type & 1)) {
+                    if (!( static_cast<uint8_t>(vertices[off+i+1].kind) & 1)) {
                         // next point is also a curve point, so interpolate an on-point curve
                         sx = (x + static_cast<int32_t>(vertices[off+i+1].x)) >> 1;
                         sy = (y + static_cast<int32_t>(vertices[off+i+1].y)) >> 1;
@@ -1879,7 +1137,7 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
                     sx = x;
                     sy = y;
                 }
-                vertices[num_vertices++].Update(VertexType::Move, sx, sy, 0, 0);
+                vertices[num_vertices++].Update(Vertex::Kind::Move, sx, sy, 0, 0);
                 was_off = false;
                 next_move = 1 + Ushort(end_pts_contours + j * 2);
                 ++j;
@@ -1888,19 +1146,15 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
                 if (!(flags & 1)) { // if it's a curve
                     if (was_off) {
                         // two off-curve control points in a row means interpolate an on-curve midpoint
-                        vertices[num_vertices++].Update(VertexType::Curve,
-                                        (cx+x)>>1, (cy+y)>>1, cx, cy);
+                        vertices[num_vertices++].Update(Vertex::Kind::Curve, (cx+x)>>1, (cy+y)>>1, cx, cy);
                     }
                     cx = x;
                     cy = y;
                     was_off = true;
                 }
                 else {
-                    if (was_off) {
-                        vertices[num_vertices++].Update(VertexType::Curve, x, y, cx, cy);
-                    } else {
-                        vertices[num_vertices++].Update(VertexType::Line, x, y, 0, 0);
-                    }
+                    if (was_off) vertices[num_vertices++].Update(Vertex::Kind::Curve, x, y, cx, cy);
+                    else         vertices[num_vertices++].Update(Vertex::Kind::Line,  x, y, 0, 0);
                     was_off = false;
                 }
             }
@@ -1964,13 +1218,13 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
                 // Transform vertices.
                 for (int i = 0; i < comp_num_verts; ++i) {
                     Vertex* v = &comp_verts[i];
-                    Vertex::PrimitiveType x, y;
+                    Vertex::value_t x, y;
                     x = v->x; y = v->y;
-                    v->x = static_cast<Vertex::PrimitiveType>(m * (mtx[0] * x + mtx[2] * y + mtx[4]));
-                    v->y = static_cast<Vertex::PrimitiveType>(n * (mtx[1] * x + mtx[3] * y + mtx[5]));
+                    v->x = static_cast<Vertex::value_t>(m * (mtx[0] * x + mtx[2] * y + mtx[4]));
+                    v->y = static_cast<Vertex::value_t>(n * (mtx[1] * x + mtx[3] * y + mtx[5]));
                     x = v->cx; y = v->cy;
-                    v->cx = static_cast<Vertex::PrimitiveType>(m * (mtx[0] * x + mtx[2] * y + mtx[4]));
-                    v->cy = static_cast<Vertex::PrimitiveType>(n * (mtx[1] * x + mtx[3] * y + mtx[5]));
+                    v->cx = static_cast<Vertex::value_t>(m * (mtx[0] * x + mtx[2] * y + mtx[4]));
+                    v->cy = static_cast<Vertex::value_t>(n * (mtx[1] * x + mtx[3] * y + mtx[5]));
                 }
                 // Append vertices.
                 tmp = reinterpret_cast<Vertex*>(STBTT_malloc((num_vertices + comp_num_verts) * sizeof(Vertex), fi.userdata));
@@ -2125,7 +1379,7 @@ Point* TrueType::FlattenCurves(Vertex* vertices, int num_verts,
 
     // count how many "moves" there are to get the contour count
     for (i = 0; i < num_verts; ++i)
-        if (vertices[i].type == static_cast<uint8_t>(VertexType::Move))
+        if (vertices[i].kind == Vertex::Kind::Move)
             ++n;
 
     *num_contours = n;
@@ -2149,8 +1403,8 @@ Point* TrueType::FlattenCurves(Vertex* vertices, int num_verts,
         num_points = 0;
         n = -1;
         for (i=0; i < num_verts; ++i) {
-            switch (static_cast<VertexType>(vertices[i].type)) {
-            case VertexType::Move:
+            switch (vertices[i].kind) {
+            case Vertex::Kind::Move:
                 // start the next contour
                 if (n >= 0)
                     (*contour_lengths)[n] = num_points - start;
@@ -2160,18 +1414,18 @@ Point* TrueType::FlattenCurves(Vertex* vertices, int num_verts,
                 x = vertices[i].x, y = vertices[i].y;
                 AddPoint(points, num_points++, x, y);
                 break;
-            case VertexType::Line:
+            case Vertex::Kind::Line:
                 x = vertices[i].x, y = vertices[i].y;
                 AddPoint(points, num_points++, x, y);
                 break;
-            case VertexType::Curve:
+            case Vertex::Kind::Curve:
                 TesselateCurve(points, &num_points, x, y,
                                vertices[i].cx, vertices[i].cy,
                                vertices[i].x, vertices[i].y,
                                objspace_flatness_squared, 0);
                 x = vertices[i].x, y = vertices[i].y;
                 break;
-            case VertexType::Cubic:
+            case Vertex::Kind::Cubic:
                 TesselateCubic(points, &num_points, x, y,
                                vertices[i].cx, vertices[i].cy,
                                vertices[i].cx1, vertices[i].cy1,
@@ -2214,7 +1468,7 @@ void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int win
     float scale_x, float scale_y, float shift_x, float shift_y,
     int off_x, int off_y, int invert, void* userdata) noexcept {
     float y_scale_inv = invert ? -scale_y : scale_y;
-    Edge* e;
+    detail::Edge* e;
     int n, i, j, k, m;
     // now we have to blow out the windings into explicit edge lists
     n = 0;
@@ -2222,7 +1476,7 @@ void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int win
         n += wcount[i];
 
     // add an extra one as a sentinel
-    e = reinterpret_cast<Edge*>(STBTT_malloc(sizeof(*e) * (n + 1), userdata));
+    e = reinterpret_cast<detail::Edge*>(STBTT_malloc(sizeof(*e) * (n + 1), userdata));
     if (e == 0) return;
     n = 0;
 
@@ -2260,16 +1514,29 @@ void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int win
     STBTT_free(e, userdata);
 }
 
-void TrueType::RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int off_x, int off_y, void* userdata) noexcept {
-    HandleHeap hh{};
+void TrueType::RasterizeSortedEdges(Bitmap& out, detail::Edge* e, int n, int off_x, int off_y, void* userdata) noexcept {
+    using detail::ChunkPool;
+    using detail::ActiveEdge;
+
+    ChunkPool hh{};
     ActiveEdge* active{ nullptr };
     int y, j=0;
     float scanline_data[129], * scanline, * scanline2;
 
-    if (out.w > 64)
-        scanline = reinterpret_cast<float*>(STBTT_malloc((out.w*2+1) * sizeof(float), userdata));
-    else
+    if (out.w > 64) {
+        scanline = reinterpret_cast<float*>(
+            STBTT_malloc((out.w * 2 + 1) * sizeof(float), userdata)
+            );
+        if (!scanline) {
+            // fail-safe: no coverage produced
+            for (int row = 0; row < out.h; ++row)
+                STBTT_memset(out.pixels + row * out.stride, 0, out.w);
+            return;
+        }
+    }
+    else {
         scanline = scanline_data;
+    }
 
     scanline2 = scanline + out.w;
 
@@ -2321,7 +1588,7 @@ void TrueType::RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int off_x, int 
 
         // now process all active edges
         if (active)
-            active->FillActiveEdgesV2(scanline, scanline2 + 1, out.w, scan_y_top);
+            active->FillActiveEdges(scanline, scanline2 + 1, out.w, scan_y_top);
 
         {
             float sum = 0;
@@ -2358,7 +1625,9 @@ void TrueType::RasterizeSortedEdges(Bitmap& out, Edge* e, int n, int off_x, int 
 
 
 
-inline void TrueType::_SortEdgesQuicksort(Edge* p, int n) noexcept {
+inline void TrueType::_SortEdgesQuicksort(detail::Edge* p, int n) noexcept {
+    using detail::Edge;
+
     /* threshold for transitioning to insertion sort */
     while (n > 12) {
         Edge t;
@@ -2421,9 +1690,9 @@ inline void TrueType::_SortEdgesQuicksort(Edge* p, int n) noexcept {
     }
 }
 
-inline void TrueType::_SortEdgesInsSort(Edge* p, int n) noexcept {
+inline void TrueType::_SortEdgesInsSort(detail::Edge* p, int n) noexcept {
     for (int i = 1; i < n; ++i) {
-        Edge t = p[i];
+        detail::Edge t = p[i];
         int j = i;
         while (j > 0) {
             if (!(t.y0 < p[j - 1].y0))

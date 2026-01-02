@@ -217,7 +217,6 @@ namespace stbtt_test {
             auto more = split_paths(pN);
             paths.insert(paths.end(), more.begin(), more.end());
         }
-
         // add defaults at end
         auto defs = default_font_candidates();
         paths.insert(paths.end(), defs.begin(), defs.end());
@@ -263,20 +262,20 @@ namespace stbtt_test {
 #define STBTT_free(p, u)    stbtt_test::tt_free((p), (u))
 
 // ---------------- C++ port ----------------
-#include "stb_truetype.hpp"
+#include "stbtt/stb_truetype.hpp"
 
 // ---------------- reference stb_truetype.h ----------------
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
-#include "stb_truetype.h"
+#include "stbtt/stb_truetype.h"
 #endif
 
 // =====================================================================================
 //                                       TESTS
 // =====================================================================================
 
-TEST_CASE("stb::TrueType - can locate a usable font file (or skip with help)", "[stbtt][setup]") {
+TEST_CASE("stbtt::TrueType - can locate a usable font file (or skip with help)", "[stbtt][setup]") {
     auto path = stbtt_test::first_existing_font_path();
     if (path.empty()) {
         FAIL("No font found. Set STBTT_TEST_FONT=/path/to/font.ttf (or STBTT_TEST_FONTS=...;...).");
@@ -284,7 +283,7 @@ TEST_CASE("stb::TrueType - can locate a usable font file (or skip with help)", "
     SUCCEED("Found font: " + path);
 }
 
-TEST_CASE("stb::TrueType::GetNumberOfFonts/GetFontOffsetForIndex - TTC header parsing (synthetic)", "[stbtt][ttc]") {
+TEST_CASE("stbtt::TrueType::GetNumberOfFonts/GetFontOffsetForIndex - TTC header parsing (synthetic)", "[stbtt][ttc]") {
     // Minimal TTC header:
     // 'ttcf' + version(0x00010000) + numFonts(2) + offsets[0]=0x20 offsets[1]=0x40
     std::uint8_t ttc[32]{};
@@ -292,12 +291,12 @@ TEST_CASE("stb::TrueType::GetNumberOfFonts/GetFontOffsetForIndex - TTC header pa
     ttc[4] = 0x00; ttc[5] = 0x01; ttc[6] = 0x00; ttc[7] = 0x00;
     ttc[8] = 0x00; ttc[9] = 0x00; ttc[10] = 0x00; ttc[11] = 0x02;
     ttc[12] = 0x00; ttc[13] = 0x00; ttc[14] = 0x00; ttc[15] = 0x20;
-    ttc[16] = 0x00; ttc[17] = 0x00; ttc[18] = 0x00; ttc[19] = 0x40;
+    ttc[16] = 0x00; ttc[17] = 0x00; ttc[18] = 0x00; ttc[19] = 0x40; 
 
-    REQUIRE(stb::TrueType::GetNumberOfFonts(ttc) == 2);
-    REQUIRE(stb::TrueType::GetFontOffsetForIndex(ttc, 0) == 0x20);
-    REQUIRE(stb::TrueType::GetFontOffsetForIndex(ttc, 1) == 0x40);
-    REQUIRE(stb::TrueType::GetFontOffsetForIndex(ttc, 2) == -1);
+    REQUIRE(stbtt::TrueType::GetNumberOfFonts(ttc) == 2);
+    REQUIRE(stbtt::TrueType::GetFontOffsetForIndex(ttc, 0) == 0x20);
+    REQUIRE(stbtt::TrueType::GetFontOffsetForIndex(ttc, 1) == 0x40);
+    REQUIRE(stbtt::TrueType::GetFontOffsetForIndex(ttc, 2) == -1);
 
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
     REQUIRE(stbtt_GetNumberOfFonts(ttc) == 2);
@@ -307,7 +306,7 @@ TEST_CASE("stb::TrueType::GetNumberOfFonts/GetFontOffsetForIndex - TTC header pa
 #endif
 }
 
-TEST_CASE("stb::TrueType - ReadBytes + basic invariants", "[stbtt][basic]") {
+TEST_CASE("stbtt::TrueType - ReadBytes + basic invariants", "[stbtt][basic]") {
     auto path = stbtt_test::first_existing_font_path();
     if (path.empty()) FAIL("No font found. Set STBTT_TEST_FONT.");
 
@@ -316,7 +315,7 @@ TEST_CASE("stb::TrueType - ReadBytes + basic invariants", "[stbtt][basic]") {
     REQUIRE(stbtt_test::read_file(path, bytes));
     REQUIRE(bytes.size() > 16);
 
-    stb::TrueType tt;
+    stbtt::TrueType tt;
     tt.fi.userdata = &st;
 
     REQUIRE(tt.ReadBytes(bytes.data()) == true);
@@ -350,7 +349,7 @@ TEST_CASE("stb::TrueType - ReadBytes + basic invariants", "[stbtt][basic]") {
     REQUIRE(hm.lsb < 10000);
 
     // Box sanity for 'A'
-    stb::Box box{};
+    stbtt::Box box{};
     REQUIRE(tt.GetGlyphBox(gA, box) == true);
     REQUIRE(box.x1 > box.x0);
     REQUIRE(box.y1 > box.y0);
@@ -384,7 +383,7 @@ TEST_CASE("stb::TrueType - ReadBytes + basic invariants", "[stbtt][basic]") {
     stbtt_test::require_no_leaks_and_no_corruption(st);
 }
 
-TEST_CASE("stb::TrueType - shifts/subpixel: bitmap dimensions stable-ish", "[stbtt][subpixel]") {
+TEST_CASE("stbtt::TrueType - shifts/subpixel: bitmap dimensions stable-ish", "[stbtt][subpixel]") {
     auto path = stbtt_test::first_existing_font_path();
     if (path.empty()) FAIL("No font found. Set STBTT_TEST_FONT.");
 
@@ -392,7 +391,7 @@ TEST_CASE("stb::TrueType - shifts/subpixel: bitmap dimensions stable-ish", "[stb
     std::vector<std::uint8_t> bytes;
     REQUIRE(stbtt_test::read_file(path, bytes));
 
-    stb::TrueType tt;
+    stbtt::TrueType tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -418,7 +417,7 @@ TEST_CASE("stb::TrueType - shifts/subpixel: bitmap dimensions stable-ish", "[stb
 
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
 
-static void require_same_box(const stb::Box& a, const stb::Box& b) {
+static void require_same_box(const stbtt::Box& a, const stbtt::Box& b) {
     REQUIRE(a.x0 == b.x0);
     REQUIRE(a.y0 == b.y0);
     REQUIRE(a.x1 == b.x1);
@@ -434,7 +433,7 @@ TEST_CASE("Reference compare - Init/Scale/GlyphIndex/HMetrics/Boxes match stb_tr
     REQUIRE(stbtt_test::read_file(path, bytes));
 
     // Your port
-    stb::TrueType tt;
+    stbtt::TrueType tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -470,7 +469,7 @@ TEST_CASE("Reference compare - Init/Scale/GlyphIndex/HMetrics/Boxes match stb_tr
         REQUIRE(hm.advance == adv);
         REQUIRE(hm.lsb == lsb);
 
-        stb::Box boxA{};
+        stbtt::Box boxA{};
         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         bool okA = tt.GetGlyphBox(gA, boxA);
         int okB = stbtt_GetGlyphBox(&ref, gB, &x0, &y0, &x1, &y1);
@@ -494,7 +493,7 @@ TEST_CASE("Reference compare - GetGlyphBitmapBox + MakeGlyphBitmap are byte-iden
     std::vector<std::uint8_t> bytes;
     REQUIRE(stbtt_test::read_file(path, bytes));
 
-    stb::TrueType tt;
+    stbtt::TrueType tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -523,12 +522,12 @@ TEST_CASE("Reference compare - GetGlyphBitmapBox + MakeGlyphBitmap are byte-iden
         float scaleB = stbtt_ScaleForPixelHeight(&ref, c.px);
 
         // Bitmap box (subpixel)
-        stb::Box ba = tt.GetGlyphBitmapBox(g, scaleA, scaleA, c.sx, c.sy);
+        stbtt::Box ba = tt.GetGlyphBitmapBox(g, scaleA, scaleA, c.sx, c.sy);
 
         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         stbtt_GetGlyphBitmapBoxSubpixel(&ref, g, scaleB, scaleB, c.sx, c.sy, &x0, &y0, &x1, &y1);
 
-        stb::Box bb{}; bb.x0 = x0; bb.y0 = y0; bb.x1 = x1; bb.y1 = y1;
+        stbtt::Box bb{}; bb.x0 = x0; bb.y0 = y0; bb.x1 = x1; bb.y1 = y1;
         require_same_box(ba, bb);
 
         int w = ba.x1 - ba.x0;
@@ -556,7 +555,7 @@ TEST_CASE("Reference compare - randomized ASCII corpus stays identical", "[stbtt
     std::vector<std::uint8_t> bytes;
     REQUIRE(stbtt_test::read_file(path, bytes));
 
-    stb::TrueType tt;
+    stbtt::TrueType tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -587,7 +586,7 @@ TEST_CASE("Reference compare - randomized ASCII corpus stays identical", "[stbtt
         float sA = tt.ScaleForPixelHeight(px);
         float sB = stbtt_ScaleForPixelHeight(&ref, px);
 
-        stb::Box ba = tt.GetGlyphBitmapBox(gA, sA, sA, shx, shy);
+        stbtt::Box ba = tt.GetGlyphBitmapBox(gA, sA, sA, shx, shy);
 
         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         stbtt_GetGlyphBitmapBoxSubpixel(&ref, gB, sB, sB, shx, shy, &x0, &y0, &x1, &y1);
@@ -613,7 +612,7 @@ TEST_CASE("Reference compare - randomized ASCII corpus stays identical", "[stbtt
 
 #endif // STBTT_TEST_WITH_REFERENCE
 
-TEST_CASE("Optional - TTC real file sanity (if provided)", "[stbtt][ttc][optional]") {
+TEST_CASE("TTC real file sanity", "[stbtt][ttc][optional]") {
     auto ttc_path = stbtt_test::getenv_str("STBTT_TEST_TTC");
     if (ttc_path.empty()) FAIL("Set STBTT_TEST_TTC=/path/to/font.ttc to enable.");
 
@@ -621,11 +620,11 @@ TEST_CASE("Optional - TTC real file sanity (if provided)", "[stbtt][ttc][optiona
     REQUIRE(stbtt_test::read_file(ttc_path, bytes));
     REQUIRE(bytes.size() > 16);
 
-    int n = stb::TrueType::GetNumberOfFonts(bytes.data());
+    int n = stbtt::TrueType::GetNumberOfFonts(bytes.data());
     REQUIRE(n >= 1);
 
     for (int i = 0; i < std::min(n, 4); ++i) {
-        int off = stb::TrueType::GetFontOffsetForIndex(bytes.data(), i);
+        int off = stbtt::TrueType::GetFontOffsetForIndex(bytes.data(), i);
         REQUIRE(off >= 0);
         REQUIRE(static_cast<std::size_t>(off) < bytes.size());
     }
@@ -634,12 +633,12 @@ TEST_CASE("Optional - TTC real file sanity (if provided)", "[stbtt][ttc][optiona
     REQUIRE(stbtt_GetNumberOfFonts(bytes.data()) == n);
     for (int i = 0; i < std::min(n, 4); ++i) {
         REQUIRE(stbtt_GetFontOffsetForIndex(bytes.data(), i) ==
-            stb::TrueType::GetFontOffsetForIndex(bytes.data(), i));
+            stbtt::TrueType::GetFontOffsetForIndex(bytes.data(), i));
     }
 #endif
 }
 
-TEST_CASE("Optional - CFF(Type2)/cubic stress (if provided)", "[stbtt][cff][optional]") {
+TEST_CASE("CFF(Type2)/cubic stress", "[stbtt][cff][optional]") {
     auto cff_path = stbtt_test::getenv_str("STBTT_TEST_CFF");
     if (cff_path.empty()) FAIL("Set STBTT_TEST_CFF=/path/to/cff-font.otf to enable cubic tests.");
 
@@ -648,7 +647,7 @@ TEST_CASE("Optional - CFF(Type2)/cubic stress (if provided)", "[stbtt][cff][opti
     REQUIRE(stbtt_test::read_file(cff_path, bytes));
     REQUIRE(bytes.size() > 16);
 
-    stb::TrueType tt;
+    stbtt::TrueType tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -690,8 +689,8 @@ TEST_CASE("GetNumberOfFonts fuzz-lite (safe: only reads header bytes)", "[stbtt]
     for (int i = 0; i < 2000; ++i) {
         for (auto& b : buf) b = static_cast<std::uint8_t>(rnd() & 0xFF);
 
-        (void)stb::TrueType::GetNumberOfFonts(buf.data());
-        (void)stb::TrueType::GetFontOffsetForIndex(buf.data(), int(rnd() % 4));
+        (void)stbtt::TrueType::GetNumberOfFonts(buf.data());
+        (void)stbtt::TrueType::GetFontOffsetForIndex(buf.data(), int(rnd() % 4));
 
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
         (void)stbtt_GetNumberOfFonts(buf.data());

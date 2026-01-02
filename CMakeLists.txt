@@ -214,9 +214,16 @@ endforeach()
 add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
 
 # --- Sources ---------------------------------------------------------------
-set(SOURCES_TRUETYPE        "src/include/stb_truetype.hpp")
-set(SOURCES_TRUETYPE_CATCH  "src/include/stb_truetype.hpp"
-                            "src/include/stb_truetype.h")
+set(SOURCES_TRUETYPE "src/include/stbtt/stb_truetype.hpp"
+                     "src/include/stbtt/detail/buf.hpp"
+                     "src/include/stbtt/detail/chunk_pool.hpp"
+                     "src/include/stbtt/detail/edges.hpp"
+                     "src/include/stbtt/detail/enums.hpp"
+                     "src/include/stbtt/detail/math_integration.hpp"
+                     "src/include/stbtt/detail/libc_integration.hpp")
+
+set(SOURCES_TRUETYPE_CATCH  "${SOURCES_TRUETYPE}"
+                            "src/include/stbtt/stb_truetype.h") # Keep original copy in order to do byte-diff tests
 set(SOURCES_IMAGE           "src/include/stb_image.hpp")
 set(SOURCES_IMAGE_WRITE     "src/include/stb_image_write.hpp")
 set(SOURCES_IMAGE_RESIZE2   "src/include/stb_image_resize2.hpp")

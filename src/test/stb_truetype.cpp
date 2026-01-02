@@ -1,5 +1,5 @@
 #define STBTT_FREESTANDING
-#include "stb_truetype.hpp"
+#include "stbtt/stb_truetype.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
