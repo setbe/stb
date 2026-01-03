@@ -7,22 +7,26 @@
 namespace stbtt {
     namespace detail {
         struct Edge {
-            float x0, y0, x1, y1; bool invert;
+            float x0, y0, x1, y1;
+            uint8_t invert;
+            std::uint8_t _padding[3]{};
+
             // Helper:  e[i].y0  <  e[o].y0
-            static bool CompareY0(Edge* e, size_t i, size_t o) noexcept {
+            static inline bool CompareY0(Edge* e, size_t i, size_t o) noexcept {
                 return e[i].y0 < e[o].y0;
             }
         };
 
-        struct ActiveEdge {
-            ActiveEdge* next;
-            float fx, fdx, fdy;
-            float direction;
-            float sy;
-            float ey;
 
-            static inline ActiveEdge* NewActive(ChunkPool* hh, Edge* e,
-                    int off_x, float start_point, void* userdata) noexcept;
+        struct ActiveEdge {
+            ActiveEdge* next{};
+            float fx{}, fdx{}, fdy{};
+            float direction{};
+            float sy{};
+            float ey{};
+
+            static inline void InitFromEdge(ActiveEdge& z, const Edge& e,
+                    int off_x, float start_point) noexcept;
 
             void HandleClipped(float* scanline, int x,
                     float x0, float y0, float x1, float y1) const noexcept;
@@ -32,23 +36,17 @@ namespace stbtt {
         }; // struct ActiveEdge
 
 
-
-        ActiveEdge* ActiveEdge::NewActive(ChunkPool* hh, Edge* e, int off_x, float start_point, void* userdata) noexcept {
-            ActiveEdge* z = reinterpret_cast<ActiveEdge*>(hh->Alloc(sizeof(*z), userdata));
-            float dxdy = (e->x1 - e->x0) / (e->y1 - e->y0);
-            STBTT_assert(z != nullptr);
-            //STBTT_assert(e->y0 <= start_point);
-            if (!z) return z;
-            z->fdx = dxdy;
-            z->fdy = dxdy != 0.f ? (1.f / dxdy) : 0.f;
-            z->fx = e->x0 + dxdy * (start_point - e->y0);
-            z->fx -= off_x;
-            z->direction = e->invert ? 1.f : -1.f;
-            z->sy = e->y0;
-            z->ey = e->y1;
-            z->next = 0;
-            return z;
-        } // NewActive
+        void ActiveEdge::InitFromEdge(ActiveEdge& z, const Edge& e,
+                int off_x, float start_point) noexcept {
+            const float dxdy = (e.x1 - e.x0) / (e.y1 - e.y0);
+            z.fdx = dxdy;
+            z.fdy = dxdy!=0.f ? 1.f/dxdy : 0.f;
+            z.fx  = (e.x0 + dxdy * (start_point - e.y0)) - static_cast<float>(off_x);
+            z.direction = e.invert ? 1.f : -1.f;
+            z.sy = e.y0;
+            z.ey = e.y1;
+            z.next = nullptr;
+        }
 
         void ActiveEdge::HandleClipped(float* scanline, int x,
                                        float x0, float y0, 

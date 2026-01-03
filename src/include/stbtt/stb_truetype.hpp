@@ -134,8 +134,8 @@ SOFTWARE.
 
 #include "stbtt/detail/enums.hpp"
 #include "stbtt/detail/buf.hpp"
-#include "stbtt/detail/chunk_pool.hpp"
 #include "stbtt/detail/edges.hpp"
+#include "stbtt/detail/raster_scratch.hpp"
 
 
 namespace stbtt {
@@ -314,7 +314,7 @@ struct TrueType {
                    float scale_x,  float scale_y,
                    float shift_x,  float shift_y,
                      int x_off,      int y_off,
-                    bool invert,   void* userdata) noexcept;
+                 uint8_t invert,   void* userdata) noexcept;
     
     // since most people won't use this, find this table the first time it's needed
     inline int GetSvg() noexcept;
@@ -345,13 +345,14 @@ private:
 
     void RasterizeProcess(Bitmap& out, Point* points, int* wcount, int windings,
             float scale_x, float scale_y, float shift_x, float shift_y,
-            int off_x, int off_y, int invert, void* userdata) noexcept;
-    void RasterizeSortedEdges(Bitmap& out, detail::Edge* e, int n, int off_x, int off_y, void* userdata) noexcept;
-    
-    
-    inline void SortEdges(detail::Edge* p, int n) noexcept { _SortEdgesQuicksort(p, n); _SortEdgesInsSort(p, n); }
-    inline void _SortEdgesQuicksort(detail::Edge* p, int n) noexcept;
-    inline void _SortEdgesInsSort(detail::Edge* p, int n) noexcept;
+            int off_x, int off_y, uint8_t invert, void* userdata) noexcept;
+
+    // --- Edging ---
+    void RasterizeSortedEdges(Bitmap& out, detail::Edge* e, int n_edges,
+            int off_x, int off_y, void* userdata) noexcept;
+    inline void SortEdges(detail::Edge* p, int n_edges) noexcept { _SortEdgesQuicksort(p, n_edges); _SortEdgesInsSort(p, n_edges); }
+    inline void _SortEdgesQuicksort(detail::Edge* p, int n_edges) noexcept;
+    inline void _SortEdgesInsSort(detail::Edge* p, int n_edges) noexcept;
 
 
     // --- Parsing helpers ---
@@ -1286,7 +1287,7 @@ inline void TrueType::MakeGlyphBitmap(
     bm.stride = out_stride;
 
     if (bm.w && bm.h)
-        Rasterize(bm, 0.35f, vertices, num_verts, scale_x, scale_y, shift_x, shift_y, box.x0, box.y0, true, fi.userdata);
+        Rasterize(bm, 0.35f, vertices, num_verts, scale_x, scale_y, shift_x, shift_y, box.x0, box.y0, 1, fi.userdata);
     STBTT_free(vertices, fi.userdata);
 }
 
@@ -1451,8 +1452,8 @@ inline void TrueType::Rasterize(Bitmap& out, float flatness_in_pixels,
             Vertex* vertices, int num_verts,
             float scale_x, float scale_y,
             float shift_x, float shift_y,
-            int x_off, int y_off,
-            bool invert, void* userdata) noexcept {
+              int x_off,   int y_off,
+          uint8_t invert,  void* userdata) noexcept {
     float scale          = scale_x > scale_y ? scale_y : scale_x;
     int winding_count    = 0;
     int* winding_lengths = nullptr;
@@ -1464,9 +1465,14 @@ inline void TrueType::Rasterize(Bitmap& out, float flatness_in_pixels,
     }
 }
 
-void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int windings,
-    float scale_x, float scale_y, float shift_x, float shift_y,
-    int off_x, int off_y, int invert, void* userdata) noexcept {
+void TrueType::RasterizeProcess(Bitmap& out,
+        Point* points,
+        int* wcount, int windings,
+        float scale_x, float scale_y,
+        float shift_x, float shift_y,
+        int off_x, int off_y,
+        uint8_t invert,
+        void* userdata) noexcept {
     float y_scale_inv = invert ? -scale_y : scale_y;
     detail::Edge* e;
     int n, i, j, k, m;
@@ -1514,111 +1520,109 @@ void TrueType::RasterizeProcess(Bitmap& out, Point* points, int* wcount, int win
     STBTT_free(e, userdata);
 }
 
-void TrueType::RasterizeSortedEdges(Bitmap& out, detail::Edge* e, int n, int off_x, int off_y, void* userdata) noexcept {
-    using detail::ChunkPool;
+void TrueType::RasterizeSortedEdges(Bitmap& out,
+        detail::Edge* e,   int n_edges,
+        int   off_x,       int off_y,
+        void* userdata) noexcept {
     using detail::ActiveEdge;
 
-    ChunkPool hh{};
-    ActiveEdge* active{ nullptr };
-    int y, j=0;
-    float scanline_data[129], * scanline, * scanline2;
+    const size_t bytes = detail::RasterScratchBytes(out.w, n_edges);
+    void* mem = STBTT_malloc(bytes, userdata);
 
-    if (out.w > 64) {
-        scanline = reinterpret_cast<float*>(
-            STBTT_malloc((out.w * 2 + 1) * sizeof(float), userdata)
-            );
-        if (!scanline) {
-            // fail-safe: no coverage produced
-            for (int row = 0; row < out.h; ++row)
-                STBTT_memset(out.pixels + row * out.stride, 0, out.w);
-            return;
-        }
-    }
-    else {
-        scanline = scanline_data;
+    if (!mem) {
+        // fail-safe
+        for (int row = 0; row < out.h; ++row)
+            STBTT_memset(out.pixels + row * out.stride, 0, out.w);
+        return;
     }
 
-    scanline2 = scanline + out.w;
+    detail::RasterScratch scratch =
+        detail::RasterScratchBind(mem, bytes, out.w, n_edges);
+    STBTT_assert(scratch.pool && scratch.scan);
+    
+    float* scanline = scratch.scan;          // len out.w
+    float* scanline2 = scratch.scan + out.w; // len out.w + 1 (because (2*w+1))
 
-    y = off_y;
-    e[n].y0 = static_cast<float>(off_y+out.h) + 1.f;
+    ActiveEdge* active = nullptr;
+
+    int y = off_y;
+    int j = 0;
+    int ei = 0; // index into edges
 
     while (j < out.h) {
-        // find center of pixel for this scanline
-        float scan_y_top    = y + 0.f;
-        float scan_y_bottom = y + 1.f;
+        const float scan_y_top    = static_cast<float>(y);
+        const float scan_y_bottom = static_cast<float>(y) + 1.0f;
+
+        STBTT_memset(scanline, 0, (2*out.w + 1) * sizeof(float));
+
+        // remove finished edges (single pass pointer-to-pointer)
         ActiveEdge** step = &active;
-
-        STBTT_memset(scanline,  0,  out.w      * sizeof(scanline[0]));
-        STBTT_memset(scanline2, 0, (out.w + 1) * sizeof(scanline[0]));
-
-        // update all active edges;
-        // remove all active edges that terminate before the top of this scanline
         while (*step) {
             ActiveEdge* z = *step;
             if (z->ey <= scan_y_top) {
-                *step = z->next; // delete from list
+                *step = z->next;
                 STBTT_assert(z->direction);
-                z->direction = 0;
-                hh.Free(z);
-            } else {
-                step = &((*step)->next); // advance through list
+                z->direction = 0.f;
+                scratch.free(z);
+            }
+            else {
+                step = &z->next;
             }
         }
 
-        // insert all edges that start before the bottom of this scanline
-        while (e->y0 <= scan_y_bottom) {
-            if (e->y0 != e->y1) {
-                ActiveEdge* z = ActiveEdge::NewActive(&hh, e, off_x, scan_y_top, userdata);
-                if (z != nullptr) {
-                    if (j == 0 && off_y != 0) {
-                        if (z->ey < scan_y_top) {
-                            // this can happen due to subpixel positioning and some kind of fp rounding error i think
-                            z->ey = scan_y_top;
-                        }
-                    }
-                    STBTT_assert(z->ey >= scan_y_top); // if we get really unlucky a tiny bit of an edge can be out of bounds
-                    // insert at front
-                    z->next = active;
-                    active = z;
-                }
+        // insert edges starting before bottom of scanline
+        // (avoid sentinel by checking ei < n_edges and y0 <= scan_y_bottom)
+        while (ei < n_edges && e[ei].y0 <= scan_y_bottom) {
+            const detail::Edge* ed = &e[ei];
+            ActiveEdge* z = scratch.alloc();
+
+            if (ed->y0 == ed->y1 || !z) {
+                ++ei;
+                continue;
             }
-            ++e;
-        }
+
+            ActiveEdge::InitFromEdge(*z, *ed, off_x, scan_y_top);
+
+            if (j==0 && off_y!=0) {
+                if (z->ey < scan_y_top)
+                    // this can happen due to subpixel positioning and some kind of fp rounding error i think
+                    z->ey = scan_y_top;
+            }
+            STBTT_assert(z->ey >= scan_y_top); // if we get really unlucky a tiny bit of an edge can be out of bounds
+            
+            // insert at front
+            z->next = active;
+            active = z;
+            ++ei;
+        } // while
 
         // now process all active edges
         if (active)
             active->FillActiveEdges(scanline, scanline2 + 1, out.w, scan_y_top);
 
-        {
-            float sum = 0;
-            for (int i = 0; i < out.w; ++i) {
-                float k;
-                int m;
-                sum += scanline2[i];
-                k = scanline[i] + sum;
-                k = static_cast<float>(STBTT_fabs(k)) * 255.f + 0.5f;
-                m = static_cast<int>(k);
-                if (m > 255) m = 255;
-                out.pixels[j * out.stride + i] = static_cast<unsigned char>(m);
-            }
+        
+        float sum = 0.0f;
+        unsigned char* dst = out.pixels + j * out.stride;
+
+        // write pixels
+        for (int i = 0; i < out.w; ++i) {
+            sum += scanline2[i];
+            float k = scanline[i] + sum;
+
+            // clamp to [0..255]
+            int m = int(STBTT_fabs(k) * 255.0f + 0.5f);
+            if (m > 255) m = 255;
+            dst[i] = static_cast<unsigned char>(m);
         }
         // advance all the edges
-        step = &active;
-        while (*step) {
-            ActiveEdge* z = *step;
-            z->fx += z->fdx; // advance to position for current scanline
-            step = &((*step)->next); // advance through list
-        }
+        for (ActiveEdge* z=active; z; z=z->next)
+            z->fx += z->fdx;
 
         ++y;
         ++j;
-    }
+    } // while
 
-    hh.Cleanup(userdata);
-
-    if (scanline != scanline_data)
-        STBTT_free(scanline, userdata);
+    STBTT_free(mem, userdata);
 } // RasterizeSortedEdges
 
 

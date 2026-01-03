@@ -220,7 +220,8 @@ set(SOURCES_TRUETYPE "src/include/stbtt/stb_truetype.hpp"
                      "src/include/stbtt/detail/edges.hpp"
                      "src/include/stbtt/detail/enums.hpp"
                      "src/include/stbtt/detail/math_integration.hpp"
-                     "src/include/stbtt/detail/libc_integration.hpp")
+                     "src/include/stbtt/detail/libc_integration.hpp"
+                     "src/include/stbtt/detail/raster_scratch.hpp")
 
 set(SOURCES_TRUETYPE_CATCH  "${SOURCES_TRUETYPE}"
                             "src/include/stbtt/stb_truetype.h") # Keep original copy in order to do byte-diff tests
@@ -260,7 +261,7 @@ function(setup_release_no_console_for_exe exe_target)
     endif()
 endfunction()
 
-# --- Test libraries (STATIC with .cpp) ----------
+# --- FREESTANDING Test libraries (STATIC with .cpp) ----------
 function(add_freestanding_test name headers test_cpp)
     add_executable(${name} ${test_cpp})
     setup_release_no_console_for_exe(${name})
@@ -280,7 +281,7 @@ function(add_freestanding_test name headers test_cpp)
     configure_target_for_all(${name})
 endfunction()
 
-# --- FREESTANDING Test libraries (STATIC with .cpp) ----------
+# --- Test libraries (STATIC with .cpp) ----------
 function(add_general_test name headers test_cpp)
     add_executable(${name} ${test_cpp})
     setup_release_no_console_for_exe(${name})
@@ -302,31 +303,36 @@ endfunction()
 
 # --- Freestanding Tests ---
 
-add_freestanding_test(test_tt
+add_freestanding_test(tt_example
     "${SOURCES_TRUETYPE}"
-    "src/test/stb_truetype.cpp"
+    "src/test/stbtt_example.cpp"
 )
 
-add_freestanding_test(test_img
+add_freestanding_test(i_example
     "${SOURCES_IMAGE}"
-    "src/test/stb_image.cpp"
+    "src/test/stbi_example.cpp"
 )
 
-add_freestanding_test(test_img_write
+add_freestanding_test(iw_example
     "${SOURCES_IMAGE_WRITE}"
-    "src/test/stb_image_write.cpp"
+    "src/test/stbiw_example.cpp"
 )
 
-add_freestanding_test(test_img_resize2
+add_freestanding_test(ir_example
     "${SOURCES_IMAGE_RESIZE2}"
-    "src/test/stb_image_resize2.cpp"
+    "src/test/stbir_example.cpp"
 )
 
 # --- General Tests ---
 
-add_general_test(test_tt_catch
+add_general_test(tt_catch
     "${SOURCES_TRUETYPE_CATCH}"
-    "src/test/stb_truetype_catch.cpp"
+    "src/test/stbtt_catch.cpp"
+)
+
+add_general_test(tt_bench
+    ""
+    "src/test/stbtt_bench.cpp"
 )
 
 # --- Usage notes -------------------------------------------------------------

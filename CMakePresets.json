@@ -7,6 +7,7 @@
       "description": "Build Release for x64",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "LEGACY_CPP14": "ON"
@@ -18,6 +19,7 @@
       "description": "Build ReleaseMini for Win32",
       "generator": "Visual Studio 17 2022",
       "architecture": "Win32",
+      "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "ReleaseMini",
         "LEGACY_CPP14": "ON"
