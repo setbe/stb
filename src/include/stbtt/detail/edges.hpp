@@ -9,7 +9,7 @@ namespace stbtt {
         struct Edge {
             float x0, y0, x1, y1;
             uint8_t invert;
-            std::uint8_t _padding[3]{};
+            uint8_t _padding[3]{};
 
             // Helper:  e[i].y0  <  e[o].y0
             static inline bool CompareY0(Edge* e, size_t i, size_t o) noexcept {

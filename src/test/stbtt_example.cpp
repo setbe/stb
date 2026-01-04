@@ -38,13 +38,13 @@ static void render_A(const char* font_path) {
     uint8_t* font = load_font(font_path, &sz);
     if (!font) return;
 
-    stb::TrueType tt;
+    stbtt::Font tt;
     if (!tt.ReadBytes(font)) return;
 
     float scale = tt.ScaleForPixelHeight(g_glyph_px);
     int glyph = tt.FindGlyphIndex('a');
 
-    stb::Box box;
+    stbtt::Box box;
     if (!tt.GetGlyphBox(glyph, box)) return;
 
     w = (int)((box.x1 - box.x0) * scale);
