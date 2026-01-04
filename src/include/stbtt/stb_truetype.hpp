@@ -133,7 +133,7 @@ SOFTWARE.
 
 
 #include "stbtt/detail/enums.hpp"
-#include "stbtt/detail/buf.hpp"
+#include "stbtt/detail/cff_parser.hpp"
 #include "stbtt/detail/edges.hpp"
 #include "stbtt/detail/raster_scratch.hpp"
 
@@ -152,12 +152,12 @@ struct FontInfo {
     int index_map;              // a cmap mapping for our chosen character encoding
     int index_to_loc_format;    // format needed to map from glyph index to glyph
 
-    detail::Buf cff;                    // cff font data
-    detail::Buf charstrings;            // the charstring index
-    detail::Buf g_subrs;                // global charstring subroutines index
-    detail::Buf subrs;                  // private charstring subroutines index
-    detail::Buf fontdicts;              // array of font dicts
-    detail::Buf fdselect;               // map from glyph to fontdict
+    detail::CffParser cff;                    // cff font data
+    detail::CffParser charstrings;            // the charstring index
+    detail::CffParser g_subrs;                // global charstring subroutines index
+    detail::CffParser subrs;                  // private charstring subroutines index
+    detail::CffParser fontdicts;              // array of font dicts
+    detail::CffParser fdselect;               // map from glyph to fontdict
 };
 
 struct Vertex {
@@ -285,10 +285,10 @@ struct Bitmap {
 
 struct Point { float x, y; };
 
-struct TrueType {
+struct Font {
     FontInfo fi{};
 
-    TrueType() = default;
+    Font() = default;
     inline bool ReadBytes(uint8_t* font_buffer) noexcept;
     inline float ScaleForPixelHeight(float height) const noexcept;
     inline int FindGlyphIndex(int unicode_codepoint) const noexcept;
@@ -325,7 +325,7 @@ struct TrueType {
 private:
     inline int GetGlyfOffset(int glyph_index) const noexcept;
     inline uint32_t FindTable(const char* tag) const noexcept;
-    inline detail::Buf GetCidGlyphSubrs(int glyph_index) noexcept;
+    inline detail::CffParser GetCidGlyphSubrs(int glyph_index) noexcept;
     inline int RunCharString(int glyph_index, CurveShape&) noexcept;
 
     inline int CloseShape(Vertex* vertices, int num_vertices, bool was_off, bool start_off,
@@ -336,7 +336,7 @@ private:
     inline int GetGlyphShapeT2(int glyph_index, Vertex** pvertices) noexcept;
 
     inline void AddPoint(Point* points, int n, float x, float y) noexcept;
-    inline int TesselateCurve(Point* points, int* num_points,
+    inline void TesselateCurve(Point* points, int* num_points,
             float x0, float y0, float x1, float y1,
             float x2, float y2, float objspace_flatness_squared, int n) noexcept;
     inline void TesselateCubic(Point* points, int* num_points,
@@ -381,7 +381,7 @@ private:
 //                         PUBLIC   METHODS
 // ============================================================================
 
-inline bool TrueType::ReadBytes(uint8_t* font_buffer) noexcept {
+inline bool Font::ReadBytes(uint8_t* font_buffer) noexcept {
     uint32_t cmap, t;
     int32_t i, num_tables;
 
@@ -402,7 +402,7 @@ inline bool TrueType::ReadBytes(uint8_t* font_buffer) noexcept {
     if (fi.glyf) {
         if (!fi.loca) return false; // required for truetype
     } else {
-        detail::Buf b, topdict, topdictidx;
+        detail::CffParser b, topdict, topdictidx;
         uint32_t cstype = 2, charstrings = 0, fdarrayoff = 0, fdselectoff = 0;
         uint32_t cff;
 
@@ -430,7 +430,7 @@ inline bool TrueType::ReadBytes(uint8_t* font_buffer) noexcept {
         topdict.DictGetInts(0x100 | 6, 1, &cstype);
         topdict.DictGetInts(0x100 | 36, 1, &fdarrayoff);
         topdict.DictGetInts(0x100 | 37, 1, &fdselectoff);
-        fi.subrs = detail::Buf::GetSubrs(b, topdict);
+        fi.subrs = detail::CffParser::GetSubrs(b, topdict);
 
         // we only support Type 2 charstrings
         if (cstype != 2) return false;
@@ -489,12 +489,12 @@ inline bool TrueType::ReadBytes(uint8_t* font_buffer) noexcept {
     return true;
 }
 
-inline float TrueType::ScaleForPixelHeight(float height) const noexcept {
+inline float Font::ScaleForPixelHeight(float height) const noexcept {
     int h = Short(fi.data + fi.hhea + 4) - Short(fi.data + fi.hhea + 6);
     return height / static_cast<float>(h);
 }
 
-inline int TrueType::FindGlyphIndex(int unicode_codepoint) const noexcept {
+inline int Font::FindGlyphIndex(int unicode_codepoint) const noexcept {
     uint8_t* data = fi.data;
     uint32_t index_map = fi.index_map;
 
@@ -592,7 +592,7 @@ inline int TrueType::FindGlyphIndex(int unicode_codepoint) const noexcept {
     return 0;
 }
 
-inline GlyphHorMetrics TrueType::GetGlyphHorMetrics(int glyph_index) const noexcept {
+inline GlyphHorMetrics Font::GetGlyphHorMetrics(int glyph_index) const noexcept {
     // num of long hor metrics
     uint16_t num = Ushort(fi.data + fi.hhea + 34);
 
@@ -606,7 +606,7 @@ inline GlyphHorMetrics TrueType::GetGlyphHorMetrics(int glyph_index) const noexc
 }
 
 
-inline int TrueType::GetGlyfOffset(int glyph_index) const noexcept {
+inline int Font::GetGlyfOffset(int glyph_index) const noexcept {
     int g1, g2;
     STBTT_assert(!fi.cff.size);
 
@@ -623,17 +623,20 @@ inline int TrueType::GetGlyfOffset(int glyph_index) const noexcept {
     return g1==g2 ? -1 : g1; // if length is 0, return -1
 }
 
-inline int TrueType::GetGlyphInfoT2(int glyph_index, Box& out) noexcept {
+inline int Font::GetGlyphInfoT2(int glyph_index, Box& out) noexcept {
     CurveShape c(1);
-    int r = RunCharString(glyph_index, c);
-    out.x0 = r ? c.min_x : 0;
-    out.y0 = r ? c.min_y : 0;
-    out.x1 = r ? c.max_x : 0;
-    out.y1 = r ? c.max_y : 0;
-    return r ? c.num_vertices : 0;
+    if (!RunCharString(glyph_index, c)) {
+        out.x0 = out.y0 = out.x1 = out.y1 = 0;
+        return 0;
+    }
+    out.x0 = c.min_x;
+    out.y0 = c.min_y;
+    out.x1 = c.max_x;
+    out.y1 = c.max_y;
+    return c.num_vertices;
 }
 
-inline bool TrueType::GetGlyphBox(int glyph_index, Box& box) noexcept {
+inline bool Font::GetGlyphBox(int glyph_index, Box& box) noexcept {
     if (fi.cff.size) {
         GetGlyphInfoT2(glyph_index, box);
     } else {
@@ -648,7 +651,7 @@ inline bool TrueType::GetGlyphBox(int glyph_index, Box& box) noexcept {
     return true;
 }
 
-inline Box TrueType::GetGlyphBitmapBox(int glyph_index,
+inline Box Font::GetGlyphBitmapBox(int glyph_index,
                                  float scale_x, float scale_y,
                                  float shift_x, float shift_y) noexcept {
     Box b{};
@@ -672,7 +675,7 @@ inline Box TrueType::GetGlyphBitmapBox(int glyph_index,
     
 }
 
-inline int TrueType::GetSvg() noexcept {
+inline int Font::GetSvg() noexcept {
     if (fi.svg >= 0) return fi.svg;
     uint32_t t;
     t = FindTable("SVG ");
@@ -687,7 +690,7 @@ inline int TrueType::GetSvg() noexcept {
 }
 
 
-inline uint32_t TrueType::FindTable(const char* tag) const noexcept {
+inline uint32_t Font::FindTable(const char* tag) const noexcept {
     int32_t num_tables = Ushort(fi.data + fi.fontstart+4);
     uint32_t table_dir = fi.fontstart + 12;
     for (int32_t i = 0; i < num_tables; ++i) {
@@ -698,8 +701,8 @@ inline uint32_t TrueType::FindTable(const char* tag) const noexcept {
     return 0;
 }
 
-inline detail::Buf TrueType::GetCidGlyphSubrs(int glyph_index) noexcept {
-    detail::Buf fd_select = fi.fdselect; // copy
+inline detail::CffParser Font::GetCidGlyphSubrs(int glyph_index) noexcept {
+    detail::CffParser fd_select = fi.fdselect; // copy
     int nranges, start, end, v, fmt;
     int fdselector = -1;
 
@@ -723,23 +726,23 @@ inline detail::Buf TrueType::GetCidGlyphSubrs(int glyph_index) noexcept {
             start = end;
         }
     }
-    if (fdselector == -1) return detail::Buf{};
+    if (fdselector == -1) return detail::CffParser{};
 
-    detail::Buf fontdict = fi.fontdicts.CffGetIndex(fdselector);
-    return detail::Buf::GetSubrs(fi.cff, fontdict);
+    detail::CffParser fontdict = fi.fontdicts.CffGetIndex(fdselector);
+    return detail::CffParser::GetSubrs(fi.cff, fontdict);
 }
 
-inline int TrueType::RunCharString(int glyph_index, CurveShape& c) noexcept {
+inline int Font::RunCharString(int glyph_index, CurveShape& c) noexcept {
     int in_header = 1;
     int sp, maskbits, subr_stack_height, has_subrs;
     has_subrs = subr_stack_height = maskbits = sp = 0;
     
     int v, i, b0, clear_stack;
     float s[48]{};
-    detail::Buf subr_stack[10];
-    detail::Buf subrs = fi.subrs;
+    detail::CffParser subr_stack[10];
+    detail::CffParser subrs = fi.subrs;
     
-    detail::Buf b;
+    detail::CffParser b;
     float f;
 
 #define STBTT__CSERR(s) (0)
@@ -871,7 +874,7 @@ inline int TrueType::RunCharString(int glyph_index, CurveShape& c) noexcept {
             v = (int)s[--sp];
             if (subr_stack_height >= 10) return STBTT__CSERR("recursion limit");
             subr_stack[subr_stack_height++] = b;
-            b = detail::Buf::GetSubr(b0 == 0x0A ? subrs : fi.g_subrs, v);
+            b = detail::CffParser::GetSubr(b0 == 0x0A ? subrs : fi.g_subrs, v);
             if (b.size == 0) return STBTT__CSERR("subr not found");
             b.cursor = 0;
             clear_stack = 0;
@@ -995,7 +998,7 @@ inline int TrueType::RunCharString(int glyph_index, CurveShape& c) noexcept {
 }
 
 
-inline int TrueType::CloseShape(Vertex* vertices, int num_vertices, bool was_off, bool start_off,
+inline int Font::CloseShape(Vertex* vertices, int num_vertices, bool was_off, bool start_off,
     int32_t sx, int32_t sy, int32_t scx, int32_t scy, int32_t cx, int32_t cy) noexcept {
     STBTT_assert(vertices);
 
@@ -1011,13 +1014,13 @@ inline int TrueType::CloseShape(Vertex* vertices, int num_vertices, bool was_off
     return num_vertices;
 }
 
-inline int TrueType::GetGlyphShape(int glyph_index, Vertex** pvertices) noexcept {
+inline int Font::GetGlyphShape(int glyph_index, Vertex** pvertices) noexcept {
     return fi.cff.size ?
         GetGlyphShapeT2(glyph_index, pvertices)
         : GetGlyphShapeTT(glyph_index, pvertices);
 }
 
-inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexcept {
+inline int Font::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexcept {
     int16_t num_contours;
     uint8_t* end_pts_contours;
     uint8_t* data = fi.data;
@@ -1253,7 +1256,7 @@ inline int TrueType::GetGlyphShapeTT(int glyph_index, Vertex** pvertices) noexce
     return num_vertices;
 }
 
-inline int TrueType::GetGlyphShapeT2(int glyph_index, Vertex** pvertices) noexcept {
+inline int Font::GetGlyphShapeT2(int glyph_index, Vertex** pvertices) noexcept {
     // runs the charstring twice, once to count and once to output (to avoid realloc)
     CurveShape cs(1);
     CurveShape out(0);
@@ -1270,7 +1273,7 @@ inline int TrueType::GetGlyphShapeT2(int glyph_index, Vertex** pvertices) noexce
 }
 
 
-inline void TrueType::MakeGlyphBitmap(
+inline void Font::MakeGlyphBitmap(
     unsigned char* output, int glyph_index,
     int out_w, int out_h,
     int out_stride,
@@ -1291,14 +1294,13 @@ inline void TrueType::MakeGlyphBitmap(
     STBTT_free(vertices, fi.userdata);
 }
 
-inline void TrueType::AddPoint(Point* points, int n, float x, float y) noexcept {
+inline void Font::AddPoint(Point* points, int n, float x, float y) noexcept {
     if (!points) return; // during first pass, it's unallocated
     points[n].x = x;
     points[n].y = y;
 }
 
-// @TODO Why this method always returns "1"? Should we return void instead?
-inline int TrueType::TesselateCurve(Point* points, int* num_points,
+inline void Font::TesselateCurve(Point* points, int* num_points,
                    float x0, float y0, float x1, float y1, float x2, float y2,
                    float objspace_flatness_squared, int n) noexcept {
     // midpoint
@@ -1308,7 +1310,7 @@ inline int TrueType::TesselateCurve(Point* points, int* num_points,
     float dx = (x0+x2)/2 - mx;
     float dy = (y0+y2)/2 - my;
     if (n > 16) // 65536 segments on one curve better be enough!
-        return 1;
+        return;
 
     // half-pixel error allowed... need to be smaller if AA
     if (dx*dx + dy*dy > objspace_flatness_squared) {
@@ -1319,10 +1321,9 @@ inline int TrueType::TesselateCurve(Point* points, int* num_points,
         AddPoint(points, *num_points, x2, y2);
         *num_points = *num_points + 1;
     }
-    return 1;
 }
 
-inline void TrueType::TesselateCubic(Point* points, int* num_points,
+inline void Font::TesselateCubic(Point* points, int* num_points,
                         float x0, float y0, float x1, float y1,
                         float x2, float y2, float x3, float y3,
                         float objspace_flatness_squared, int n) noexcept {
@@ -1369,7 +1370,7 @@ inline void TrueType::TesselateCubic(Point* points, int* num_points,
     }
 }
 
-Point* TrueType::FlattenCurves(Vertex* vertices, int num_verts,
+Point* Font::FlattenCurves(Vertex* vertices, int num_verts,
     float objspace_flatness, int** contour_lengths,
     int* num_contours, void* userdata) noexcept {
     Point* points = nullptr;
@@ -1448,7 +1449,7 @@ error:
     return nullptr;
 }
 
-inline void TrueType::Rasterize(Bitmap& out, float flatness_in_pixels,
+inline void Font::Rasterize(Bitmap& out, float flatness_in_pixels,
             Vertex* vertices, int num_verts,
             float scale_x, float scale_y,
             float shift_x, float shift_y,
@@ -1465,7 +1466,7 @@ inline void TrueType::Rasterize(Bitmap& out, float flatness_in_pixels,
     }
 }
 
-void TrueType::RasterizeProcess(Bitmap& out,
+void Font::RasterizeProcess(Bitmap& out,
         Point* points,
         int* wcount, int windings,
         float scale_x, float scale_y,
@@ -1520,7 +1521,7 @@ void TrueType::RasterizeProcess(Bitmap& out,
     STBTT_free(e, userdata);
 }
 
-void TrueType::RasterizeSortedEdges(Bitmap& out,
+void Font::RasterizeSortedEdges(Bitmap& out,
         detail::Edge* e,   int n_edges,
         int   off_x,       int off_y,
         void* userdata) noexcept {
@@ -1629,7 +1630,7 @@ void TrueType::RasterizeSortedEdges(Bitmap& out,
 
 
 
-inline void TrueType::_SortEdgesQuicksort(detail::Edge* p, int n) noexcept {
+inline void Font::_SortEdgesQuicksort(detail::Edge* p, int n) noexcept {
     using detail::Edge;
 
     /* threshold for transitioning to insertion sort */
@@ -1694,7 +1695,7 @@ inline void TrueType::_SortEdgesQuicksort(detail::Edge* p, int n) noexcept {
     }
 }
 
-inline void TrueType::_SortEdgesInsSort(detail::Edge* p, int n) noexcept {
+inline void Font::_SortEdgesInsSort(detail::Edge* p, int n) noexcept {
     for (int i = 1; i < n; ++i) {
         detail::Edge t = p[i];
         int j = i;
@@ -1713,7 +1714,7 @@ inline void TrueType::_SortEdgesInsSort(detail::Edge* p, int n) noexcept {
 //                         STATIC   METHODS
 // ============================================================================
 
-inline int TrueType::GetFontOffsetForIndex(uint8_t* buff, int index) noexcept {
+inline int Font::GetFontOffsetForIndex(uint8_t* buff, int index) noexcept {
     if (IsFont(buff)) // if it's just a font, there's only one valid index
         return index == 0 ? 0 : -1;
     if (Tag(buff, "ttcf")) { // check if it's a TTC
@@ -1728,7 +1729,7 @@ inline int TrueType::GetFontOffsetForIndex(uint8_t* buff, int index) noexcept {
     return -1;
 }
 
-inline int TrueType::GetNumberOfFonts(const uint8_t* buff) noexcept {
+inline int Font::GetNumberOfFonts(const uint8_t* buff) noexcept {
     // if it's just a font, there's only one valid font
     if (IsFont(buff)) return 1;
     if (Tag(buff, "ttcf")) { // check if it's a TTC

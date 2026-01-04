@@ -1,5 +1,4 @@
-// test_stb_truetype_catch2_single.hpp
-// Compile as a single TU. Requires Catch2 single-header + your stb_truetype.hpp.
+// Compile as a single TU. Requires Catch2 single-header.
 // Optional: add original stb_truetype.h (v1.26) for strict byte-to-byte comparison.
 //
 // ENV:
@@ -293,10 +292,10 @@ TEST_CASE("stbtt::TrueType::GetNumberOfFonts/GetFontOffsetForIndex - TTC header 
     ttc[12] = 0x00; ttc[13] = 0x00; ttc[14] = 0x00; ttc[15] = 0x20;
     ttc[16] = 0x00; ttc[17] = 0x00; ttc[18] = 0x00; ttc[19] = 0x40; 
 
-    REQUIRE(stbtt::TrueType::GetNumberOfFonts(ttc) == 2);
-    REQUIRE(stbtt::TrueType::GetFontOffsetForIndex(ttc, 0) == 0x20);
-    REQUIRE(stbtt::TrueType::GetFontOffsetForIndex(ttc, 1) == 0x40);
-    REQUIRE(stbtt::TrueType::GetFontOffsetForIndex(ttc, 2) == -1);
+    REQUIRE(stbtt::Font::GetNumberOfFonts(ttc) == 2);
+    REQUIRE(stbtt::Font::GetFontOffsetForIndex(ttc, 0) == 0x20);
+    REQUIRE(stbtt::Font::GetFontOffsetForIndex(ttc, 1) == 0x40);
+    REQUIRE(stbtt::Font::GetFontOffsetForIndex(ttc, 2) == -1);
 
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
     REQUIRE(stbtt_GetNumberOfFonts(ttc) == 2);
@@ -315,7 +314,7 @@ TEST_CASE("stbtt::TrueType - ReadBytes + basic invariants", "[stbtt][basic]") {
     REQUIRE(stbtt_test::read_file(path, bytes));
     REQUIRE(bytes.size() > 16);
 
-    stbtt::TrueType tt;
+    stbtt::Font tt;
     tt.fi.userdata = &st;
 
     REQUIRE(tt.ReadBytes(bytes.data()) == true);
@@ -391,7 +390,7 @@ TEST_CASE("stbtt::TrueType - shifts/subpixel: bitmap dimensions stable-ish", "[s
     std::vector<std::uint8_t> bytes;
     REQUIRE(stbtt_test::read_file(path, bytes));
 
-    stbtt::TrueType tt;
+    stbtt::Font tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -433,7 +432,7 @@ TEST_CASE("Reference compare - Init/Scale/GlyphIndex/HMetrics/Boxes match stb_tr
     REQUIRE(stbtt_test::read_file(path, bytes));
 
     // Your port
-    stbtt::TrueType tt;
+    stbtt::Font tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -493,7 +492,7 @@ TEST_CASE("Reference compare - GetGlyphBitmapBox + MakeGlyphBitmap are byte-iden
     std::vector<std::uint8_t> bytes;
     REQUIRE(stbtt_test::read_file(path, bytes));
 
-    stbtt::TrueType tt;
+    stbtt::Font tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -555,7 +554,7 @@ TEST_CASE("Reference compare - randomized ASCII corpus stays identical", "[stbtt
     std::vector<std::uint8_t> bytes;
     REQUIRE(stbtt_test::read_file(path, bytes));
 
-    stbtt::TrueType tt;
+    stbtt::Font tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -620,11 +619,11 @@ TEST_CASE("TTC real file sanity", "[stbtt][ttc][optional]") {
     REQUIRE(stbtt_test::read_file(ttc_path, bytes));
     REQUIRE(bytes.size() > 16);
 
-    int n = stbtt::TrueType::GetNumberOfFonts(bytes.data());
+    int n = stbtt::Font::GetNumberOfFonts(bytes.data());
     REQUIRE(n >= 1);
 
     for (int i = 0; i < std::min(n, 4); ++i) {
-        int off = stbtt::TrueType::GetFontOffsetForIndex(bytes.data(), i);
+        int off = stbtt::Font::GetFontOffsetForIndex(bytes.data(), i);
         REQUIRE(off >= 0);
         REQUIRE(static_cast<std::size_t>(off) < bytes.size());
     }
@@ -633,7 +632,7 @@ TEST_CASE("TTC real file sanity", "[stbtt][ttc][optional]") {
     REQUIRE(stbtt_GetNumberOfFonts(bytes.data()) == n);
     for (int i = 0; i < std::min(n, 4); ++i) {
         REQUIRE(stbtt_GetFontOffsetForIndex(bytes.data(), i) ==
-            stbtt::TrueType::GetFontOffsetForIndex(bytes.data(), i));
+            stbtt::Font::GetFontOffsetForIndex(bytes.data(), i));
     }
 #endif
 }
@@ -647,7 +646,7 @@ TEST_CASE("CFF(Type2)/cubic stress", "[stbtt][cff][optional]") {
     REQUIRE(stbtt_test::read_file(cff_path, bytes));
     REQUIRE(bytes.size() > 16);
 
-    stbtt::TrueType tt;
+    stbtt::Font tt;
     tt.fi.userdata = &st;
     REQUIRE(tt.ReadBytes(bytes.data()));
 
@@ -689,8 +688,8 @@ TEST_CASE("GetNumberOfFonts fuzz-lite (safe: only reads header bytes)", "[stbtt]
     for (int i = 0; i < 2000; ++i) {
         for (auto& b : buf) b = static_cast<std::uint8_t>(rnd() & 0xFF);
 
-        (void)stbtt::TrueType::GetNumberOfFonts(buf.data());
-        (void)stbtt::TrueType::GetFontOffsetForIndex(buf.data(), int(rnd() % 4));
+        (void)stbtt::Font::GetNumberOfFonts(buf.data());
+        (void)stbtt::Font::GetFontOffsetForIndex(buf.data(), int(rnd() % 4));
 
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
         (void)stbtt_GetNumberOfFonts(buf.data());

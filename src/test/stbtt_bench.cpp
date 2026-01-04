@@ -1,9 +1,4 @@
-// ENV:
-//  STBTT_TEST_FONT    : one primary font path
-//  STBTT_TEST_FONTS   : additional font paths separated by ';' or ':'
-//  STBTT_BENCH_ITERS  : iterations per font (default 100000)
-//  STBTT_BENCH_MODE   : "glyph" (default) or "text"
-//  STBTT_BENCH_REF    : "1" to enable reference bench (default 1 if reference header present)
+// Honest bench: warmup + render full ASCII [32..126] per iteration.
 
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +11,7 @@
 #include <iostream>
 #include <chrono>
 #include <limits>
+#include <iomanip>
 
 #if defined(_WIN32)
 #   include <windows.h>
@@ -38,13 +34,15 @@ namespace stbtt_bench {
         std::size_t live_bytes = 0;
         std::size_t total_allocs = 0;
         std::size_t total_frees = 0;
+        std::size_t total_req_bytes = 0;
+        std::size_t peak_live_bytes = 0;
         bool corrupt = false;
         const char* corrupt_reason = nullptr;
     };
 
     struct BlockHeader {
         std::uint64_t magic;
-        std::size_t size;
+        std::size_t   size;
         void* base;
     };
 
@@ -66,7 +64,7 @@ namespace stbtt_bench {
         const std::size_t tail_sz = sizeof(std::uint64_t);
 
         std::size_t total = header_sz + sz + tail_sz + A;
-        void* base = std::malloc(total);
+        void* base = malloc(total);
         if (!base) return nullptr;
 
         std::uintptr_t p = reinterpret_cast<std::uintptr_t>(base);
@@ -83,11 +81,10 @@ namespace stbtt_bench {
             st->live_blocks++;
             st->live_bytes += sz;
             st->total_allocs++;
+            st->total_req_bytes += sz;
+            if (st->live_bytes > st->peak_live_bytes)
+                st->peak_live_bytes = st->live_bytes;
         }
-
-        // optional poison (can add overhead; keep off by default)
-        // std::memset(reinterpret_cast<void*>(user), 0xCD, sz);
-
         return reinterpret_cast<void*>(user);
     }
 
@@ -98,15 +95,10 @@ namespace stbtt_bench {
         std::uintptr_t user = reinterpret_cast<std::uintptr_t>(ptr);
         auto* h = reinterpret_cast<BlockHeader*>(user - sizeof(BlockHeader));
 
-        if (h->magic != kMagic) {
-            mark_corrupt(st, "Header magic mismatch.");
-            return;
-        }
+        if (h->magic != kMagic) { mark_corrupt(st, "Header magic mismatch."); return; }
 
         auto* tailp = reinterpret_cast<std::uint64_t*>(user + h->size);
-        if (*tailp != kTail) {
-            mark_corrupt(st, "Tail canary mismatch.");
-        }
+        if (*tailp != kTail) { mark_corrupt(st, "Tail canary mismatch."); }
 
         if (st) {
             if (st->live_blocks) st->live_blocks--;
@@ -116,12 +108,19 @@ namespace stbtt_bench {
 
         void* base = h->base;
         h->magic = 0;
-        std::free(base);
+        free(base);
     }
 
     static std::string getenv_str(const char* name) {
         const char* v = std::getenv(name);
         return v ? std::string(v) : std::string{};
+    }
+
+    static int getenv_int(const char* name, int def) {
+        auto s = getenv_str(name);
+        if (s.empty()) return def;
+        try { return std::max(1, std::stoi(s)); }
+        catch (...) { return def; }
     }
 
     static std::vector<std::string> split_paths(const std::string& s) {
@@ -140,7 +139,7 @@ namespace stbtt_bench {
             while (!p.empty() && (p.front() == ' ' || p.front() == '\t')) p.erase(p.begin());
             while (!p.empty() && (p.back() == ' ' || p.back() == '\t')) p.pop_back();
         }
-        out.erase(std::remove_if(out.begin(), out.end(), [](auto& x) {return x.empty(); }), out.end());
+        out.erase(std::remove_if(out.begin(), out.end(), [](auto& x) { return x.empty(); }), out.end());
         return out;
     }
 
@@ -181,7 +180,6 @@ namespace stbtt_bench {
 
     static std::vector<std::string> collect_font_paths() {
         std::vector<std::string> paths;
-
         auto p1 = getenv_str("STBTT_TEST_FONT");
         if (!p1.empty()) paths.push_back(p1);
 
@@ -199,35 +197,40 @@ namespace stbtt_bench {
         return paths;
     }
 
-    static std::uint64_t fnv1a64(const void* data, std::size_t n) {
-        const auto* p = (const std::uint8_t*)data;
-        std::uint64_t h = 1469598103934665603ull;
-        for (std::size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
-        return h;
+    // Cheap checksum to prevent DCE, lighter than hashing the whole bitmap every time.
+    static inline std::uint64_t mix64(std::uint64_t x) {
+        x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+        x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+        x ^= x >> 33; return x;
     }
 
-    static int getenv_int(const char* name, int def) {
-        auto s = getenv_str(name);
-        if (s.empty()) return def;
-        try { return std::max(1, std::stoi(s)); }
-        catch (...) { return def; }
-    }
+    struct GlyphJob {
+        int cp = 0;
+        int glyph = 0;
+        int w = 0, h = 0;
+        int x0 = 0, y0 = 0; // for debug if needed
+        std::vector<std::uint8_t> buf;
+    };
 
     struct BenchResult {
         double ms_total = 0.0;
+
         std::size_t allocs = 0;
         std::size_t frees = 0;
-        std::size_t bytes_live_peak = 0;
+        std::size_t req_bytes = 0;
+        std::size_t peak_live = 0;
+
+        bool ok_alloc = true;
         std::uint64_t checksum = 0;
     };
 
 } // namespace stbtt_bench
 
-// Bind allocator hooks:
+// Bind allocator hooks for your port:
 #define STBTT_malloc(sz,u) stbtt_bench::tt_malloc((sz),(u))
 #define STBTT_free(p,u)    stbtt_bench::tt_free((p),(u))
 
-// Fork
+// Your fork
 #include "stbtt/stb_truetype.hpp"
 
 // Reference stb (optional)
@@ -237,124 +240,313 @@ namespace stbtt_bench {
 #   include "stbtt/stb_truetype.h"
 #endif
 
-// ---------------- Bench core ----------------
-static stbtt_bench::BenchResult bench_port_glyph(std::vector<std::uint8_t>& font_bytes,
-    int iters, stbtt_bench::AllocStats& st)
+// ---------------- Prep + Bench (PORT) ----------------
+static bool prep_port_jobs(stbtt::Font& tt,
+    float px, float sx, float sy,
+    std::vector<stbtt_bench::GlyphJob>& jobs)
 {
-    stbtt::TrueType tt;
+    const float sc = tt.ScaleForPixelHeight(px);
+    jobs.clear();
+    jobs.reserve(95);
+
+    for (int cp = 32; cp <= 126; ++cp) {
+        int g = tt.FindGlyphIndex(cp);
+        // still include missing glyphs (g==0) for fairness
+        auto bb = tt.GetGlyphBitmapBox(g, sc, sc, sx, sy);
+        int w = bb.x1 - bb.x0;
+        int h = bb.y1 - bb.y0;
+        if (w <= 0 || h <= 0) {
+            // keep a job with empty buffer (still counts cost of lookup in loop if you want)
+            stbtt_bench::GlyphJob j{};
+            j.cp = cp; j.glyph = g; j.w = 0; j.h = 0; j.x0 = bb.x0; j.y0 = bb.y0;
+            jobs.push_back(std::move(j));
+            continue;
+        }
+        stbtt_bench::GlyphJob j{};
+        j.cp = cp;
+        j.glyph = g;
+        j.w = w; j.h = h;
+        j.x0 = bb.x0; j.y0 = bb.y0;
+        j.buf.resize((std::size_t)w * (std::size_t)h);
+        jobs.push_back(std::move(j));
+    }
+    return true;
+}
+
+static stbtt_bench::BenchResult bench_port_ascii(std::vector<std::uint8_t>& font_bytes,
+    int warmup_iters, int iters,
+    float px, float sx, float sy)
+{
+    stbtt_bench::AllocStats st{};
+    stbtt::Font tt;
     tt.fi.userdata = &st;
     if (!tt.ReadBytes(font_bytes.data())) return {};
 
-    // pick a stable glyph
-    int gA = tt.FindGlyphIndex('A');
-    if (gA < 0) gA = 0;
+    std::vector<stbtt_bench::GlyphJob> jobs;
+    prep_port_jobs(tt, px, sx, sy, jobs);
 
-    float sc = tt.ScaleForPixelHeight(32.0f);
-    auto bb = tt.GetGlyphBitmapBox(gA, sc, sc, 0.25f, 0.25f);
-    int w = bb.x1 - bb.x0;
-    int h = bb.y1 - bb.y0;
-    if (w <= 0 || h <= 0) return {};
+    // Warmup (not measured)
+    for (int w = 0; w < warmup_iters; ++w) {
+        for (auto& j : jobs) {
+            if (j.w == 0) continue;
+            std::memset(j.buf.data(), 0, j.buf.size());
+            const float sc = tt.ScaleForPixelHeight(px);
+            tt.MakeGlyphBitmap(j.buf.data(), j.glyph, j.w, j.h, j.w, sc, sc, sx, sy);
+        }
+    }
 
-    std::vector<std::uint8_t> bmp((std::size_t)w * (std::size_t)h);
+    // Reset allocator stats after warmup to measure steady-state allocations
+    stbtt_bench::AllocStats st_meas{};
+    tt.fi.userdata = &st_meas;
 
+    // Measured
+    volatile std::uint64_t sink = 0;
     auto t0 = std::chrono::steady_clock::now();
-    std::uint64_t chk = 0;
-    for (int i = 0; i < iters; ++i) {
-        std::memset(bmp.data(), 0, bmp.size());
-        tt.MakeGlyphBitmap(bmp.data(), gA, w, h, w, sc, sc, 0.25f, 0.25f);
-        chk ^= stbtt_bench::fnv1a64(bmp.data(), bmp.size());
+    for (int it = 0; it < iters; ++it) {
+        const float sc = tt.ScaleForPixelHeight(px);
+        for (auto& j : jobs) {
+            if (j.w == 0) continue;
+            std::memset(j.buf.data(), 0, j.buf.size());
+            tt.MakeGlyphBitmap(j.buf.data(), j.glyph, j.w, j.h, j.w, sc, sc, sx, sy);
+
+            // very light checksum: sample a few bytes
+            std::uint64_t x = 0;
+            const std::size_t n = j.buf.size();
+            if (n) {
+                x ^= j.buf[0];
+                x ^= (std::uint64_t)j.buf[n >> 1] << 8;
+                x ^= (std::uint64_t)j.buf[n - 1] << 16;
+            }
+            sink ^= stbtt_bench::mix64(x + (std::uint64_t)j.cp);
+        }
     }
     auto t1 = std::chrono::steady_clock::now();
 
     stbtt_bench::BenchResult r{};
     r.ms_total = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    r.allocs = st.total_allocs;
-    r.frees = st.total_frees;
-    r.checksum = chk;
+    r.allocs = st_meas.total_allocs;
+    r.frees = st_meas.total_frees;
+    r.req_bytes = st_meas.total_req_bytes;
+    r.peak_live = st_meas.peak_live_bytes;
+    r.ok_alloc = !st_meas.corrupt && st_meas.live_blocks == 0 && st_meas.live_bytes == 0;
+    r.checksum = (std::uint64_t)sink;
     return r;
 }
 
-static stbtt_bench::BenchResult bench_ref_glyph(const std::vector<std::uint8_t>& font_bytes,
-    int iters, stbtt_bench::AllocStats& st)
-{
-    (void)st; // reference uses malloc/free, we don't track it
+// ---------------- Prep + Bench (REF) ----------------
+#ifndef STBTT_BENCH_NO_REFERENCE
 
+static bool prep_ref_jobs(stbtt_fontinfo& ref, float px, float sx, float sy,
+    std::vector<stbtt_bench::GlyphJob>& jobs)
+{
+    const float sc = stbtt_ScaleForPixelHeight(&ref, px);
+    jobs.clear();
+    jobs.reserve(95);
+
+    for (int cp = 32; cp <= 126; ++cp) {
+        int g = stbtt_FindGlyphIndex(&ref, cp);
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        stbtt_GetGlyphBitmapBoxSubpixel(&ref, g, sc, sc, sx, sy, &x0, &y0, &x1, &y1);
+        int w = x1 - x0;
+        int h = y1 - y0;
+
+        stbtt_bench::GlyphJob j{};
+        j.cp = cp; j.glyph = g; j.w = w; j.h = h; j.x0 = x0; j.y0 = y0;
+        if (w > 0 && h > 0) j.buf.resize((std::size_t)w * (std::size_t)h);
+        jobs.push_back(std::move(j));
+    }
+    return true;
+}
+
+static stbtt_bench::BenchResult bench_ref_ascii(std::vector<std::uint8_t>& font_bytes,
+    int warmup_iters, int iters,
+    float px, float sx, float sy)
+{
+    stbtt_bench::AllocStats st{};
     stbtt_fontinfo ref{};
     int off = stbtt_GetFontOffsetForIndex(font_bytes.data(), 0);
     if (off < 0) return {};
     if (!stbtt_InitFont(&ref, font_bytes.data(), off)) return {};
 
-    int gA = stbtt_FindGlyphIndex(&ref, 'A');
-    float sc = stbtt_ScaleForPixelHeight(&ref, 32.0f);
+    std::vector<stbtt_bench::GlyphJob> jobs;
+    prep_ref_jobs(ref, px, sx, sy, jobs);
 
-    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-    stbtt_GetGlyphBitmapBoxSubpixel(&ref, gA, sc, sc, 0.25f, 0.25f, &x0, &y0, &x1, &y1);
-    int w = x1 - x0, h = y1 - y0;
-    if (w <= 0 || h <= 0) return {};
+    // Warmup (not measured)
+    for (int w = 0; w < warmup_iters; ++w) {
+        const float sc = stbtt_ScaleForPixelHeight(&ref, px);
+        for (auto& j : jobs) {
+            if (j.w <= 0 || j.h <= 0) continue;
+            std::memset(j.buf.data(), 0, j.buf.size());
+            stbtt_MakeGlyphBitmapSubpixel(&ref, j.buf.data(), j.w, j.h, j.w, sc, sc, sx, sy, j.glyph);
+        }
+    }
 
-    std::vector<std::uint8_t> bmp((std::size_t)w * (std::size_t)h);
+    // Reset allocator stats after warmup to measure steady-state allocations
+    stbtt_bench::AllocStats st_meas{};
+    ref.userdata = &st_meas;
 
+    // Measured
+    volatile std::uint64_t sink = 0;
     auto t0 = std::chrono::steady_clock::now();
-    std::uint64_t chk = 0;
-    for (int i = 0; i < iters; ++i) {
-        std::memset(bmp.data(), 0, bmp.size());
-        stbtt_MakeGlyphBitmapSubpixel(&ref, bmp.data(), w, h, w, sc, sc, 0.25f, 0.25f, gA);
-        chk ^= stbtt_bench::fnv1a64(bmp.data(), bmp.size());
+    for (int it = 0; it < iters; ++it) {
+        const float sc = stbtt_ScaleForPixelHeight(&ref, px);
+        for (auto& j : jobs) {
+            if (j.w <= 0 || j.h <= 0) continue;
+            std::memset(j.buf.data(), 0, j.buf.size());
+            stbtt_MakeGlyphBitmapSubpixel(&ref, j.buf.data(), j.w, j.h, j.w, sc, sc, sx, sy, j.glyph);
+
+            std::uint64_t x = 0;
+            const std::size_t n = j.buf.size();
+            if (n) {
+                x ^= j.buf[0];
+                x ^= (std::uint64_t)j.buf[n >> 1] << 8;
+                x ^= (std::uint64_t)j.buf[n - 1] << 16;
+            }
+            sink ^= stbtt_bench::mix64(x + (std::uint64_t)j.cp);
+        }
     }
     auto t1 = std::chrono::steady_clock::now();
 
     stbtt_bench::BenchResult r{};
     r.ms_total = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    r.checksum = chk;
+    r.allocs = st_meas.total_allocs;
+    r.frees = st_meas.total_frees;
+    r.req_bytes = st_meas.total_req_bytes;
+    r.peak_live = st_meas.peak_live_bytes;
+    r.ok_alloc = !st_meas.corrupt && st_meas.live_blocks == 0 && st_meas.live_bytes == 0;
+    r.checksum = (std::uint64_t)sink;
     return r;
+
 }
+
+#endif // ref
+
+static void print_header() {
+    using std::setw;
+    using std::left;
+    std::cout
+        << left << setw(48) << "font"
+        << left << setw(10) << "bytes"
+        << left << setw(12) << "port_ms"
+        << left << setw(12) << "ref_ms"
+
+        << left << setw(12) << "p_alloc"
+        << left << setw(12) << "p_free"
+        << left << setw(14) << "p_req_bytes"
+        << left << setw(14) << "p_peak_live"
+
+        << left << setw(12) << "r_alloc"
+        << left << setw(12) << "r_free"
+        << left << setw(14) << "r_req_bytes"
+        << left << setw(14) << "r_peak_live"
+
+        << left << setw(10) << "match"
+        << "\n";
+}
+
+static void print_requested_bytes(double glyphs,
+            stbtt_bench::BenchResult port,
+            stbtt_bench::BenchResult ref) {
+    using std::setw;
+    using std::left;
+
+    const double p_alloc_per_glyph = port.allocs / glyphs;
+    const double p_avg = port.allocs ? double(port.req_bytes) / double(port.allocs) : 0.0;
+
+#ifndef STBTT_BENCH_NO_REFERENCE
+    const double r_alloc_per_glyph = ref.allocs / glyphs;
+    const double r_avg = ref.allocs ? double(ref.req_bytes) / double(ref.allocs) : 0.0;
+#endif
+
+    std::cout
+        << left << setw(14) << "p_per_glyph"
+        << left << setw(14) << "p_avg"
+#ifndef STBTT_BENCH_NO_REFERENCE
+        << left << setw(14) << "r_per_glyph"
+        << left << setw(14) << "r_avg"
+#endif
+        << "\n";
+
+    std::cout
+        << left << setw(14) << p_alloc_per_glyph
+        << left << setw(14) << p_avg
+#ifndef STBTT_BENCH_NO_REFERENCE
+        << left << setw(14) << r_alloc_per_glyph
+        << left << setw(14) << r_avg
+#endif
+        << "\n";
+}
+
 
 int main() {
     set_high_perf_timer();
 
-    const int iters = stbtt_bench::getenv_int("STBTT_BENCH_ITERS", 100000);
+    const int iters = stbtt_bench::getenv_int("STBTT_BENCH_ITERS", 10000);
+    const int warmup = stbtt_bench::getenv_int("STBTT_BENCH_WARMUP", std::max(10, iters / 20));
+    const float px = 32.0f;
+    const float sx = 0.25f;
+    const float sy = 0.25f;
+    const double glyphs = double(iters) * 95.0;
 
     auto paths = stbtt_bench::collect_font_paths();
     std::cout << "Fonts candidates: " << paths.size() << "\n";
-    std::cout << "Iterations/font: " << iters << "\n\n";
+    std::cout << "Warmup passes:    " << warmup << " (each pass renders ASCII 32..126)\n";
+    std::cout << "Measured passes:  " << iters << " (each pass renders ASCII 32..126)\n\n";
 
-    // header
-    std::cout << "font\t\t\t\tbytes\tport_ms\tref_ms\tport_allocs\tport_frees\tchecksums_match\n";
+    print_header();
 
     for (const auto& path : paths) {
         std::vector<std::uint8_t> bytes;
         if (!stbtt_bench::read_file(path, bytes)) continue;
 
-        stbtt_bench::AllocStats st_port{};
-        auto r_port = bench_port_glyph(bytes, iters, st_port);
-
-        // reset alloc stats sanity
-        bool ok_alloc = !st_port.corrupt && st_port.live_blocks == 0 && st_port.live_bytes == 0;
+        auto port = bench_port_ascii(bytes, warmup, iters, px, sx, sy);   
 
 #ifndef STBTT_BENCH_NO_REFERENCE
-        stbtt_bench::AllocStats st_ref{};
-        auto r_ref = bench_ref_glyph(bytes, iters, st_ref);
-        bool chk_ok = (r_ref.ms_total == 0.0) ? true : (r_port.checksum == r_ref.checksum);
+        auto ref = bench_ref_ascii(bytes, warmup, iters, px, sx, sy);
+        const bool match = (ref.ms_total == 0.0) ? true : (port.checksum == ref.checksum);
+        const bool ok = match && port.ok_alloc && ref.ok_alloc;   
 #else
-        double ref_ms = 0.0;
-        bool chk_ok = true;
+        const bool ok = port.ok_alloc;
 #endif
 
-#ifndef STBTT_BENCH_NO_REFERENCE
-        double ref_ms = r_ref.ms_total;
-#else
-        double ref_ms = 0.0;
-#endif
+        // fixed-width rows (truncate very long path for neatness)
+        std::string shown = path;
+        if (shown.size() > 47) {
+            shown = "..." + shown.substr(shown.size() - 44);
+        }
+
+        print_requested_bytes(glyphs, port, ref);
 
         std::cout
-            << path << "\t"
-            << bytes.size() << "\t"
-            << r_port.ms_total << "\t"
-            << ref_ms << "\t"
-            << r_port.allocs << "\t\t"
-            << r_port.frees << "\t\t"
-            << (chk_ok && ok_alloc ? "yes" : "no")
+            << std::left << std::setw(48) << shown
+            << std::left << std::setw(10) << bytes.size()
+            << std::left << std::setw(12) << port.ms_total
+#ifndef STBTT_BENCH_NO_REFERENCE
+            << std::left << std::setw(12) << ref.ms_total
+#else
+            << std::left << std::setw(12) << 0.0
+#endif
+
+            << std::left << std::setw(12) << port.allocs
+            << std::left << std::setw(12) << port.frees
+            << std::left << std::setw(14) << port.req_bytes
+            << std::left << std::setw(14) << port.peak_live
+
+#ifndef STBTT_BENCH_NO_REFERENCE
+            << std::left << std::setw(12) << ref.allocs
+            << std::left << std::setw(12) << ref.frees
+            << std::left << std::setw(14) << ref.req_bytes
+            << std::left << std::setw(14) << ref.peak_live
+#else
+            << std::left << std::setw(12) << 0
+            << std::left << std::setw(12) << 0
+            << std::left << std::setw(14) << 0
+            << std::left << std::setw(14) << 0
+#endif
+
+            << std::left << std::setw(10) << (ok ? "yes" : "no")
             << "\n";
+
     }
 
     return 0;

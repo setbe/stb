@@ -2,29 +2,39 @@ cmake_minimum_required(VERSION 3.22)
 
 project(freestanding_stb LANGUAGES CXX)
 
-# --- User options ----------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Options
+# -----------------------------------------------------------------------------
 option(LEGACY_CPP14 "Use legacy C++14 compiler (default ON)" ON)
 option(BUILD_SHARED_LIBS "Build shared libs" OFF)
 
-# Add custom configurations for multi-config generators (Visual Studio / Xcode)
+# -----------------------------------------------------------------------------
+# Build configurations (MSVC multi-config generators)
+# -----------------------------------------------------------------------------
 if(MSVC)
-    # ensure the custom configurations exist for multi-config generators
-    set(default_configs "Debug;Release;ReleaseMini;ReleaseNoConsole;ReleaseMiniNoConsole")
-    if(NOT CMAKE_CONFIGURATION_TYPES)
-        set(CMAKE_CONFIGURATION_TYPES "${default_configs}" CACHE STRING "Available build configurations" FORCE)
-    else()
+    set(_default_configs "Debug;Release;ReleaseMini;ReleaseNoConsole;ReleaseMiniNoConsole")
+
+    if(CMAKE_CONFIGURATION_TYPES)
+        # Multi-config generator (Visual Studio, Xcode)
         list(APPEND CMAKE_CONFIGURATION_TYPES "ReleaseMini" "ReleaseNoConsole" "ReleaseMiniNoConsole")
         list(REMOVE_DUPLICATES CMAKE_CONFIGURATION_TYPES)
         set(CMAKE_CONFIGURATION_TYPES "${CMAKE_CONFIGURATION_TYPES}" CACHE STRING "Available build configurations" FORCE)
+    else()
+        # Single-config generator (Ninja, Makefiles)
+        # (CMAKE_BUILD_TYPE is selected manually: -DCMAKE_BUILD_TYPE=ReleaseMini)
+        set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+        set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS ${_default_configs})
     endif()
 
-    # 32-bit platform for VS
+    # Default Win32 for VS
     if(NOT DEFINED CMAKE_GENERATOR_PLATFORM)
         set(CMAKE_GENERATOR_PLATFORM "Win32" CACHE STRING "Platform for Visual Studio" FORCE)
     endif()
 endif()
 
-# --- Language standard -----------------------------------------------------
+# -----------------------------------------------------------------------------
+# Language standard
+# -----------------------------------------------------------------------------
 if(LEGACY_CPP14)
     set(CMAKE_CXX_STANDARD 14)
 else()
@@ -33,313 +43,284 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# --- Global flags mapping -------------------------------------------------
+# -----------------------------------------------------------------------------
+# Config groups
+# -----------------------------------------------------------------------------
+set(FREESTANDING_CONFIGS ReleaseMini ReleaseNoConsole ReleaseMiniNoConsole)
 
-include_directories("src/include/")
-
-# We'll apply flags per-config and per-compiler using generator expressions.
-# MSVC: map exact switches requested by user. Paths and PDB names are generic here.
-
-# MSVC flags for ReleaseMini (32-bit oriented in your provided list)
-set(msvc_release_mini_flags
-    "/permissive-"
-    "/GS-"
-    "/TP"
-    "/W3"
-    "/Gy"
-    "/Zc:wchar_t"
-    "/Gm-"
-    "/O1"
-    "/Ob1"
-    "/sdl-"
-    "/Zc:inline"
-    "/fp:fast"
-    "/D;NDEBUG"
-    "/utf-8"
-    "/fp:except-"
-    "/errorReport:none"
-    "/WX-"
-    "/Zc:forScope"
-    "/GR-"
-    "/Gz"
-    "/Oy"
-    "/MT"
-    "/FC"
-    "/nologo"
-    "/Os"
-    "/diagnostics:column"
-    # Additional options
-    "/Zc:threadSafeInit-"
-    "/Zl"
-    "/Oi-" # essential for freestanding
+# Helper generator expression: true when freestanding config
+set(_GE_FREESTANDING
+    "$<OR:$<CONFIG:ReleaseMini>,$<CONFIG:ReleaseNoConsole>,$<CONFIG:ReleaseMiniNoConsole>>"
 )
 
-# MSVC flags for Release
-set(msvc_release_flags
+# -----------------------------------------------------------------------------
+# Flags (cleanly separated: common vs freestanding-only)
+# -----------------------------------------------------------------------------
+set(msvc_common_compile
     "/permissive-"
-    "/GS-"
+    "/utf-8"
+    "/diagnostics:column"
+    "/nologo"
+)
+
+# Freestanding base (applies to all Release* freestanding configs)
+set(msvc_freestanding_base
     "/TP"
     "/W3"
-    "/Gy"
-    "/Zc:wchar_t"
+    "/FC"
+    "/GS-"
+    "/GR-"
+    "/Zl"
+    "/Zc:threadSafeInit-"
+    "/Oi-"     # essential for freestanding (disable intrinsics)
     "/Gm-"
+    "/Gy"
+    "/Zc:inline"
+    "/Zc:wchar_t"
+    "/Zc:forScope"
+    "/sdl-"
+    "/errorReport:none"
+    "/WX-"
+    "/D;NDEBUG"
+)
+
+# Freestanding "full" (ReleaseNoConsole)
+set(msvc_freestanding_full_opt
     "/O2"
     "/Ob2"
-    "/sdl-"
-    "/Zc:inline"
     "/fp:precise"
-    "/D;NDEBUG"
-    "/utf-8"
-    "/errorReport:none"
-    "/WX-"
-    "/Zc:forScope"
-    "/GR-"
-    "/Gr"
-    "/Oy"
-    "/MT"
-    "/FC"
-    "/nologo"
-    "/Fo%OUTDIR%"
     "/Ot"
-    "/diagnostics:column"
-    # Additional options
-    "/Zc:threadSafeInit-"
-    "/Zl"
-    "/Oi-"
+    "/Oy"
 )
 
-# MSVC flags for Debug (keep defaults plus debug info)
-set(msvc_debug_flags
+# Freestanding "mini" (ReleaseMini, ReleaseMiniNoConsole)
+set(msvc_freestanding_mini_opt
+    "/O1"
+    "/Ob1"
+    "/fp:fast"
+    "/Os"
+    "/Oy"
+)
+
+# Debug
+set(msvc_debug_compile
     "/Zi"
     "/W3"
     "/GR"
     "/Od"
-    "/MDd"
 )
 
-# GCC/Clang equivalents (best-effort mapping)
-set(unix_release_march_flags
-    "-O3"
-    "-march=native"
+# GCC/Clang
+set(unix_common_compile
+    "-pipe"
+)
+
+set(unix_freestanding_base
     "-ffunction-sections"
     "-fdata-sections"
     "-fno-exceptions"
     "-fno-rtti"
-    "-ffast-math"
     "-fno-math-errno"
     "-fno-signaling-nans"
     "-fomit-frame-pointer"
-    "-pipe"
-    "-flto"
 )
-set(unix_release_mini_flags
+
+set(unix_freestanding_full_opt
+    "-O3"
+    "-flto"
+    "-ffast-math"
+)
+
+set(unix_freestanding_mini_opt
     "-O1"
     "-Os"
-    "-ffunction-sections"
-    "-fdata-sections"
-    "-fno-exceptions"
-    "-fno-rtti"
-    "-fomit-frame-pointer"
-    "-fno-math-errno"
     "-ffast-math"
-    "-fno-signaling-nans"
-    "-pipe"
 )
-set(unix_debug_flags
+
+set(unix_debug_compile
     "-O0"
     "-g"
     "-fno-omit-frame-pointer"
 )
 
-# Helper: add common compile options to a target using generator expressions
-function(configure_target_for_all t)
-    # Check if the target is an INTERFACE library
-    get_target_property(target_type ${t} TYPE)
-    if(target_type STREQUAL "INTERFACE_LIBRARY")
-        return()
-    endif()
+# -----------------------------------------------------------------------------
+# Common include root
+# -----------------------------------------------------------------------------
+set(PROJECT_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/src/include")
 
-    # MSVC: specific per-config flags
-    target_compile_options(${t} PRIVATE
-        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:ReleaseMini>>:${msvc_release_mini_flags}>
-        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:${msvc_release_flags}>
-        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:${msvc_debug_flags}>
-        # ReleaseNoConsole will reuse Release flags but we may add WIN32 subsystem at link-time
-        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:ReleaseMiniNoConsole>>:${msvc_release_mini_flags}>
-        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:ReleaseNoConsole>>:${msvc_release_flags}>
-
-        # GCC/Clang mapping
-        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:Release>>:${unix_release_march_flags}>
-        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:ReleaseMini>>:${unix_release_mini_flags}>
-        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:Debug>>:${unix_debug_flags}>
+# -----------------------------------------------------------------------------
+# Functions
+# -----------------------------------------------------------------------------
+function(io_apply_common target)
+    target_include_directories(${target} PRIVATE
+        $<BUILD_INTERFACE:${PROJECT_INCLUDE_DIR}>
     )
 
-    # Linker flags for GCC/Clang to drop unused sections
+    target_compile_definitions(${target} PRIVATE
+        $<$<CONFIG:Release>:NDEBUG>
+    )
+
+    # compiler-id common flags
+    target_compile_options(${target} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:${msvc_common_compile}>
+        $<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>:${unix_common_compile}>
+    )
+endfunction()
+
+function(io_apply_freestanding target)
+    # MSVC: apply ONLY for freestanding configs
+    target_compile_options(${target} PRIVATE
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,${_GE_FREESTANDING}>:${msvc_freestanding_base}>
+
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:ReleaseNoConsole>>:${msvc_freestanding_full_opt}>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:ReleaseMini>>:${msvc_freestanding_mini_opt}>
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:ReleaseMiniNoConsole>>:${msvc_freestanding_mini_opt}>
+    )
+
+    # MSVC runtime: freestanding => /MT; otherwise leave default (MD/MDd from CMake)
+    if(MSVC)
+        set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY
+            "$<IF:${_GE_FREESTANDING},MultiThreaded,$<IF:$<CONFIG:Debug>,MultiThreadedDebugDLL,MultiThreadedDLL>>"
+        )
+    endif()
+
+    # GCC/Clang freestanding compile options
+    target_compile_options(${target} PRIVATE
+        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,${_GE_FREESTANDING}>:${unix_freestanding_base}>
+
+        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:ReleaseNoConsole>>:${unix_freestanding_full_opt}>
+        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:ReleaseMini>>:${unix_freestanding_mini_opt}>
+        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:ReleaseMiniNoConsole>>:${unix_freestanding_mini_opt}>
+    )
+
+    # GC sections on Unix for freestanding
     if(NOT MSVC)
-        target_link_options(${t} PRIVATE
-            $<$<CONFIG:Release>:LINKER:--gc-sections>
-            $<$<CONFIG:ReleaseMini>:LINKER:--gc-sections>
+        target_link_options(${target} PRIVATE
+            $<$<AND:$<OR:$<CONFIG:ReleaseMini>,$<CONFIG:ReleaseNoConsole>,$<CONFIG:ReleaseMiniNoConsole>>:LINKER:--gc-sections>
         )
     endif()
 endfunction()
 
-# Fix: CMake needs per-config variables for custom configurations
-foreach(cfg IN ITEMS ReleaseMini ReleaseNoConsole ReleaseMiniNoConsole)
-    string(TOUPPER "${cfg}" CFG_UP)
-
-    if(NOT DEFINED CMAKE_C_FLAGS_${CFG_UP})
-        set(CMAKE_C_FLAGS_${CFG_UP} "")
-    endif()
-
-    if(NOT DEFINED CMAKE_CXX_FLAGS_${CFG_UP})
-        set(CMAKE_CXX_FLAGS_${CFG_UP} "")
-    endif()
-
-    if(NOT DEFINED CMAKE_EXE_LINKER_FLAGS_${CFG_UP})
-        set(CMAKE_EXE_LINKER_FLAGS_${CFG_UP} "")
-    endif()
-
-    if(NOT DEFINED CMAKE_SHARED_LINKER_FLAGS_${CFG_UP})
-        set(CMAKE_SHARED_LINKER_FLAGS_${CFG_UP} "")
-    endif()
-
-    if(NOT DEFINED CMAKE_STATIC_LINKER_FLAGS_${CFG_UP})
-        set(CMAKE_STATIC_LINKER_FLAGS_${CFG_UP} "")
-    endif()
-endforeach()
-
-
-
-# Common definitions
-add_compile_definitions($<$<CONFIG:Release>:NDEBUG>)
-
-# --- Sources ---------------------------------------------------------------
-set(SOURCES_TRUETYPE "src/include/stbtt/stb_truetype.hpp"
-                     "src/include/stbtt/detail/buf.hpp"
-                     "src/include/stbtt/detail/chunk_pool.hpp"
-                     "src/include/stbtt/detail/edges.hpp"
-                     "src/include/stbtt/detail/enums.hpp"
-                     "src/include/stbtt/detail/math_integration.hpp"
-                     "src/include/stbtt/detail/libc_integration.hpp"
-                     "src/include/stbtt/detail/raster_scratch.hpp")
-
-set(SOURCES_TRUETYPE_CATCH  "${SOURCES_TRUETYPE}"
-                            "src/include/stbtt/stb_truetype.h") # Keep original copy in order to do byte-diff tests
-set(SOURCES_IMAGE           "src/include/stb_image.hpp")
-set(SOURCES_IMAGE_WRITE     "src/include/stb_image_write.hpp")
-set(SOURCES_IMAGE_RESIZE2   "src/include/stb_image_resize2.hpp")
-
-# --- Header-only stb libraries (INTERFACE) --------------------------------
-function(add_freestanding_single_header_lib name header)
-    add_library(${name} INTERFACE)
-    target_sources(${name} INTERFACE ${header})
-    target_include_directories(${name} INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+function(io_apply_debug target)
+    target_compile_options(${target} PRIVATE
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:${msvc_debug_compile}>
+        $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:Debug>>:${unix_debug_compile}>
     )
 endfunction()
 
-add_freestanding_single_header_lib(truetype      ${SOURCES_TRUETYPE})
-add_freestanding_single_header_lib(image         ${SOURCES_IMAGE})
-add_freestanding_single_header_lib(image_write   ${SOURCES_IMAGE_WRITE})
-add_freestanding_single_header_lib(image_resize2 ${SOURCES_IMAGE_RESIZE2})
-
-# --- ReleaseNoConsole: set subsystem on Windows to use WinMain entrypoint ------------
-# We cannot know which targets will be executables here; provide a helper function.
-function(setup_release_no_console_for_exe exe_target)
+function(io_no_console target)
     if(MSVC)
-        # Add link option only for the ReleaseNoConsole configuration:
-        # No console (Subsystem:Windows) + WinMain as entry point
-        target_link_options(${exe_target} PRIVATE
+        target_link_options(${target} PRIVATE
             $<$<CONFIG:ReleaseNoConsole>:/SUBSYSTEM:WINDOWS>
             $<$<CONFIG:ReleaseNoConsole>:/ENTRY:WinMain>
-
             $<$<CONFIG:ReleaseMiniNoConsole>:/SUBSYSTEM:WINDOWS>
             $<$<CONFIG:ReleaseMiniNoConsole>:/ENTRY:WinMain>
         )
-    else()
-        # For Unix/Clang/GCC there is no "no-console" subsystem; executables can be linked normally.
     endif()
 endfunction()
 
-# --- FREESTANDING Test libraries (STATIC with .cpp) ----------
-function(add_freestanding_test name headers test_cpp)
-    add_executable(${name} ${test_cpp})
-    setup_release_no_console_for_exe(${name})
-
-    # Define CONSOLE for all configurations,
-    # except for ReleaseNoConsole and ReleaseMiniNoConsole
-    target_compile_definitions(${name} PRIVATE
-    $<$<OR:$<CONFIG:Debug>,$<CONFIG:Release>,$<CONFIG:ReleaseMini>>:CONSOLE>)
-
-    # Make stb headers visible in IDE by attaching them to the target:
-    target_sources(${name} PRIVATE ${headers})
-
-    target_include_directories(${name} PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+function(io_add_header_only name)
+    add_library(${name} INTERFACE)
+    target_include_directories(${name} INTERFACE
+        $<BUILD_INTERFACE:${PROJECT_INCLUDE_DIR}>
     )
-
-    configure_target_for_all(${name})
+    # to show '.hpp' in IDE:
+    target_sources(${name} INTERFACE ${ARGN})
 endfunction()
 
-# --- Test libraries (STATIC with .cpp) ----------
-function(add_general_test name headers test_cpp)
-    add_executable(${name} ${test_cpp})
-    setup_release_no_console_for_exe(${name})
+function(io_add_test_exe name)
+    # usage: io_add_test_exe(target cpp_file [headers...])
+    set(options)
+    set(oneValueArgs CPP)
+    set(multiValueArgs HEADERS LIBS)
+    cmake_parse_arguments(T "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-    # Define CONSOLE for all configurations,
-    # except for ReleaseNoConsole and ReleaseMiniNoConsole
+    add_executable(${name} ${T_CPP} ${T_HEADERS})
+    io_no_console(${name})
+
+    # CONSOLE define only for configs where it set
     target_compile_definitions(${name} PRIVATE
-    $<$<OR:$<CONFIG:Debug>,$<CONFIG:Release>,$<CONFIG:ReleaseMini>>:CONSOLE>)
-
-    # Make stb headers visible in IDE by attaching them to the target:
-    target_sources(${name} PRIVATE ${headers})
-
-    target_include_directories(${name} PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/include>
+        $<$<OR:$<CONFIG:Debug>,$<CONFIG:Release>,$<CONFIG:ReleaseMini>>:CONSOLE>
     )
 
-    configure_target_for_all(${name})
+    if(T_LIBS)
+        target_link_libraries(${name} PRIVATE ${T_LIBS})
+    endif()
+
+    io_apply_common(${name})
+    io_apply_freestanding(${name})
+    io_apply_debug(${name})
 endfunction()
 
-# --- Freestanding Tests ---
-
-add_freestanding_test(tt_example
-    "${SOURCES_TRUETYPE}"
-    "src/test/stbtt_example.cpp"
+# -----------------------------------------------------------------------------
+# Sources
+# -----------------------------------------------------------------------------
+set(SOURCES_TRUETYPE
+    "src/include/stbtt/stb_truetype.hpp"
+    "src/include/stbtt/detail/cff_parser.hpp"
+    "src/include/stbtt/detail/edges.hpp"
+    "src/include/stbtt/detail/enums.hpp"
+    "src/include/stbtt/detail/math_integration.hpp"
+    "src/include/stbtt/detail/libc_integration.hpp"
+    "src/include/stbtt/detail/raster_scratch.hpp"
 )
 
-add_freestanding_test(i_example
-    "${SOURCES_IMAGE}"
-    "src/test/stbi_example.cpp"
+set(SOURCES_TRUETYPE_CATCH
+    ${SOURCES_TRUETYPE}
+    "src/include/stbtt/stb_truetype.h"   # original for byte-diff tests
 )
 
-add_freestanding_test(iw_example
-    "${SOURCES_IMAGE_WRITE}"
-    "src/test/stbiw_example.cpp"
+set(SOURCES_IMAGE         "src/include/stb_image.hpp")
+set(SOURCES_IMAGE_WRITE   "src/include/stb_image_write.hpp")
+set(SOURCES_IMAGE_RESIZE2 "src/include/stb_image_resize2.hpp")
+
+# -----------------------------------------------------------------------------
+# Header-only interface targets
+# -----------------------------------------------------------------------------
+io_add_header_only(truetype      ${SOURCES_TRUETYPE})
+io_add_header_only(image         ${SOURCES_IMAGE})
+io_add_header_only(image_write   ${SOURCES_IMAGE_WRITE})
+io_add_header_only(image_resize2 ${SOURCES_IMAGE_RESIZE2})
+
+# -----------------------------------------------------------------------------
+# Freestanding examples
+# -----------------------------------------------------------------------------
+io_add_test_exe(tt_example
+    CPP "src/test/stbtt_example.cpp"
+    HEADERS ${SOURCES_TRUETYPE}
+    LIBS truetype
 )
 
-add_freestanding_test(ir_example
-    "${SOURCES_IMAGE_RESIZE2}"
-    "src/test/stbir_example.cpp"
+io_add_test_exe(i_example
+    CPP "src/test/stbi_example.cpp"
+    HEADERS ${SOURCES_IMAGE}
+    LIBS image
 )
 
-# --- General Tests ---
-
-add_general_test(tt_catch
-    "${SOURCES_TRUETYPE_CATCH}"
-    "src/test/stbtt_catch.cpp"
+io_add_test_exe(iw_example
+    CPP "src/test/stbiw_example.cpp"
+    HEADERS ${SOURCES_IMAGE_WRITE}
+    LIBS image_write
 )
 
-add_general_test(tt_bench
-    ""
-    "src/test/stbtt_bench.cpp"
+io_add_test_exe(ir_example
+    CPP "src/test/stbir_example.cpp"
+    HEADERS ${SOURCES_IMAGE_RESIZE2}
+    LIBS image_resize2
 )
 
-# --- Usage notes -------------------------------------------------------------
-# - Fill the SOURCES_* variables or replace the glob patterns with explicit files.
-# - For single-config generators (Makefile/Ninja) set -DCMAKE_BUILD_TYPE=ReleaseMini to build that flavor.
-# - LEGACY_CPP14=ON sets C++14. Turn OFF to use C++20.
-# - For MSVC static runtime (/MT) is enforced in the per-config flags above.
-# - To mark an executable as using WinAPI entrypoint, call setup_release_no_console_for_exe(<your_exe>)
+# -----------------------------------------------------------------------------
+# General tests
+# -----------------------------------------------------------------------------
+io_add_test_exe(tt_catch
+    CPP "src/test/stbtt_catch.cpp"
+    HEADERS ${SOURCES_TRUETYPE_CATCH}
+    LIBS truetype
+)
 
-message(STATUS "Configured freestanding CMake project (C++ standard=${CMAKE_CXX_STANDARD})")
+io_add_test_exe(tt_bench
+    CPP "src/test/stbtt_bench.cpp"
+)
+
+message(STATUS "Configured ${PROJECT_NAME} (C++${CMAKE_CXX_STANDARD})")
+message(STATUS "Freestanding configs: ${FREESTANDING_CONFIGS}")

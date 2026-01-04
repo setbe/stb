@@ -6,7 +6,7 @@
 
 namespace stbtt {
     namespace detail {
-        struct Buf {
+        struct CffParser {
             uint8_t* data;
             int cursor;
             int size;
@@ -19,39 +19,39 @@ namespace stbtt {
             inline uint32_t Get16() noexcept { return Get(2); }
             inline uint32_t Get32() noexcept { return Get(4); }
 
-            inline Buf Range(int o, int s) const noexcept;
+            inline CffParser Range(int o, int s) const noexcept;
 
-            inline Buf CffGetIndex() noexcept;
-            inline Buf CffGetIndex(int i) noexcept; // Overloaded method
+            inline CffParser CffGetIndex() noexcept;
+            inline CffParser CffGetIndex(int i) noexcept; // Overloaded method
             inline uint32_t CffInt() noexcept;
             inline void CffSkipOperand() noexcept;
             inline int CffIndexCount() noexcept { Seek(0); return Get16(); }
-            inline Buf DictGet(int key) noexcept;
+            inline CffParser DictGet(int key) noexcept;
             inline void DictGetInts(int key, int outcount, uint32_t* out) noexcept;
 
 
-            static inline Buf GetSubr(Buf& idx, int n) noexcept;
-            static inline Buf GetSubrs(Buf& cff, Buf& fontdict) noexcept;
+            static inline CffParser GetSubr(CffParser& idx, int n) noexcept;
+            static inline CffParser GetSubrs(CffParser& cff, CffParser& fontdict) noexcept;
         }; // struct Buf
 
 
 
-        inline uint8_t Buf::Get8() noexcept {
+        inline uint8_t CffParser::Get8() noexcept {
             if (cursor >= size) return 0;
             return data[cursor++];
         }
 
-        inline uint8_t Buf::Peek8() const noexcept {
+        inline uint8_t CffParser::Peek8() const noexcept {
             if (cursor >= size) return 0;
             return data[cursor];
         }
 
-        inline void Buf::Seek(int o) noexcept {
+        inline void CffParser::Seek(int o) noexcept {
             STBTT_assert(!(o > size || o < 0));
             cursor = (o > size || o < 0) ? size : o;
         }
 
-        inline uint32_t Buf::Get(int n) noexcept {
+        inline uint32_t CffParser::Get(int n) noexcept {
             STBTT_assert(n >= 1 && n <= 4);
             uint32_t v = 0;
             for (int i = 0; i < n; ++i)
@@ -59,8 +59,8 @@ namespace stbtt {
             return v;
         }
 
-        inline Buf Buf::Range(int o, int s) const noexcept {
-            Buf r{};
+        inline CffParser CffParser::Range(int o, int s) const noexcept {
+            CffParser r{};
             if (o < 0 || s < 0 || o > size || s > size - o)
                 return r;
             r.data = data + o;
@@ -68,7 +68,7 @@ namespace stbtt {
             return r;
         }
 
-        inline Buf Buf::CffGetIndex() noexcept {
+        inline CffParser CffParser::CffGetIndex() noexcept {
             int count, start, offsize;
             start = cursor;
             count = Get16();
@@ -81,7 +81,7 @@ namespace stbtt {
             return Range(start, cursor - start);
         }
 
-        inline uint32_t Buf::CffInt() noexcept {
+        inline uint32_t CffParser::CffInt() noexcept {
             int b0 = Get8();
             if (b0 >= 32 && b0 <= 246)       return b0 - 139;
             else if (b0 >= 247 && b0 <= 250) return (b0 - 247) * 256 + Get8() + 108;
@@ -92,7 +92,7 @@ namespace stbtt {
             return 0;
         }
 
-        inline void Buf::CffSkipOperand() noexcept {
+        inline void CffParser::CffSkipOperand() noexcept {
             int v, b0 = Peek8();
             STBTT_assert(b0 >= 28);
             if (b0 != 30) {
@@ -108,7 +108,7 @@ namespace stbtt {
             }
         }
 
-        inline Buf Buf::DictGet(int key) noexcept {
+        inline CffParser CffParser::DictGet(int key) noexcept {
             Seek(0);
             while (cursor < size) {
                 int start = cursor, end, op;
@@ -122,15 +122,15 @@ namespace stbtt {
             return Range(0, 0);
         }
 
-        inline void Buf::DictGetInts(int key, int outcount, uint32_t* out) noexcept {
+        inline void CffParser::DictGetInts(int key, int outcount, uint32_t* out) noexcept {
             int i;
-            Buf operands = DictGet(key);
+            CffParser operands = DictGet(key);
             for (i = 0; i < outcount && operands.cursor < operands.size; i++)
                 out[i] = operands.CffInt();
         }
 
         // Overloaded method
-        inline Buf Buf::CffGetIndex(int i) noexcept {
+        inline CffParser CffParser::CffGetIndex(int i) noexcept {
             int count, offsize, start, end;
             Seek(0);
             count = Get16();
@@ -145,29 +145,29 @@ namespace stbtt {
         }
 
 
-        inline Buf Buf::GetSubr(Buf& idx, int n) noexcept {
+        inline CffParser CffParser::GetSubr(CffParser& idx, int n) noexcept {
             int count = idx.CffIndexCount();
             int bias = 107;
             if (count >= 33900) bias = 32768;
             else if (count >= 1240)  bias = 1131;
 
             n += bias;
-            return (n < 0 || n >= count) ? Buf{}
+            return (n < 0 || n >= count) ? CffParser{}
             : idx.CffGetIndex(n);
         }
 
-        inline Buf Buf::GetSubrs(Buf& cff, Buf& fontdict) noexcept {
+        inline CffParser CffParser::GetSubrs(CffParser& cff, CffParser& fontdict) noexcept {
             uint32_t subrsoff{};
             uint32_t private_loc[2]{};
 
             fontdict.DictGetInts(18, 2, private_loc);
             if (!private_loc[1] || !private_loc[0])
-                return Buf{};
+                return CffParser{};
 
-            Buf pdict = cff.Range(private_loc[1], private_loc[0]);
+            CffParser pdict = cff.Range(private_loc[1], private_loc[0]);
             pdict.DictGetInts(19, 1, &subrsoff);
             if (!subrsoff)
-                return Buf{};
+                return CffParser{};
 
             cff.Seek(private_loc[1] + subrsoff);
             return cff.CffGetIndex();
