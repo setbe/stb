@@ -1,5 +1,5 @@
-#define STBI_FREESTANDING
-#include "stb_image.hpp"
+#define STBIR_FREESTANDING
+#include "../stb_image_resize2/stb_image_resize2.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -32,7 +32,7 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
     wc.lpszClassName = "TTWin";
     RegisterClassA(&wc);
 
-    HWND win = CreateWindowA("TTWin", "Image Viewer",
+    HWND win = CreateWindowA("TTWin", "Image Resize",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 400, 400,
         0, 0, h, 0);
 

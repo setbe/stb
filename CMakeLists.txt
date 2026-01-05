@@ -256,23 +256,23 @@ endfunction()
 # Sources
 # -----------------------------------------------------------------------------
 set(SOURCES_TRUETYPE
-    "src/include/stbtt/stb_truetype.hpp"
-    "src/include/stbtt/detail/cff_parser.hpp"
-    "src/include/stbtt/detail/edges.hpp"
-    "src/include/stbtt/detail/enums.hpp"
-    "src/include/stbtt/detail/math_integration.hpp"
-    "src/include/stbtt/detail/libc_integration.hpp"
-    "src/include/stbtt/detail/raster_scratch.hpp"
+    "stb_truetype/stb_truetype.hpp"
+    "stb_truetype/detail/cff_parser.hpp"
+    "stb_truetype/detail/edges.hpp"
+    "stb_truetype/detail/enums.hpp"
+    "stb_truetype/detail/math_integration.hpp"
+    "stb_truetype/detail/libc_integration.hpp"
+    "stb_truetype/detail/raster_scratch.hpp"
 )
 
 set(SOURCES_TRUETYPE_CATCH
     ${SOURCES_TRUETYPE}
-    "src/include/stbtt/stb_truetype.h"   # original for byte-diff tests
+    "stb_truetype/stb_truetype.h"   # original for byte-diff tests
 )
 
-set(SOURCES_IMAGE         "src/include/stb_image.hpp")
-set(SOURCES_IMAGE_WRITE   "src/include/stb_image_write.hpp")
-set(SOURCES_IMAGE_RESIZE2 "src/include/stb_image_resize2.hpp")
+set(SOURCES_IMAGE         "stb_image/stb_image.hpp")
+set(SOURCES_IMAGE_WRITE   "stb_image_write/stb_image_write.hpp")
+set(SOURCES_IMAGE_RESIZE2 "stb_image_resize2/stb_image_resize2.hpp")
 
 # -----------------------------------------------------------------------------
 # Header-only interface targets
@@ -286,25 +286,25 @@ io_add_header_only(image_resize2 ${SOURCES_IMAGE_RESIZE2})
 # Freestanding examples
 # -----------------------------------------------------------------------------
 io_add_test_exe(tt_example
-    CPP "src/test/stbtt_example.cpp"
+    CPP "test/stbtt_example.cpp"
     HEADERS ${SOURCES_TRUETYPE}
     LIBS truetype
 )
 
 io_add_test_exe(i_example
-    CPP "src/test/stbi_example.cpp"
+    CPP "test/stbi_example.cpp"
     HEADERS ${SOURCES_IMAGE}
     LIBS image
 )
 
 io_add_test_exe(iw_example
-    CPP "src/test/stbiw_example.cpp"
+    CPP "test/stbiw_example.cpp"
     HEADERS ${SOURCES_IMAGE_WRITE}
     LIBS image_write
 )
 
 io_add_test_exe(ir_example
-    CPP "src/test/stbir_example.cpp"
+    CPP "test/stbir_example.cpp"
     HEADERS ${SOURCES_IMAGE_RESIZE2}
     LIBS image_resize2
 )
@@ -313,13 +313,13 @@ io_add_test_exe(ir_example
 # General tests
 # -----------------------------------------------------------------------------
 io_add_test_exe(tt_catch
-    CPP "src/test/stbtt_catch.cpp"
+    CPP "test/stbtt_catch.cpp"
     HEADERS ${SOURCES_TRUETYPE_CATCH}
     LIBS truetype
 )
 
 io_add_test_exe(tt_bench
-    CPP "src/test/stbtt_bench.cpp"
+    CPP "test/stbtt_bench.cpp"
 )
 
 message(STATUS "Configured ${PROJECT_NAME} (C++${CMAKE_CXX_STANDARD})")

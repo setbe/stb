@@ -1,5 +1,5 @@
 #define STBIW_FREESTANDING
-#include "stb_image_write.h"
+#include "../stb_image_write/stb_image_write.hpp"
 
 #ifdef _WIN32
 #include <windows.h>

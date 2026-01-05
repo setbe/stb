@@ -261,13 +261,13 @@ namespace stbtt_test {
 #define STBTT_free(p, u)    stbtt_test::tt_free((p), (u))
 
 // ---------------- C++ port ----------------
-#include "stbtt/stb_truetype.hpp"
+#include "../stb_truetype/stb_truetype.hpp"
 
 // ---------------- reference stb_truetype.h ----------------
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
-#include "stbtt/stb_truetype.h"
+#include "../stb_truetype/stb_truetype.h"
 #endif
 
 // =====================================================================================
@@ -286,9 +286,9 @@ TEST_CASE("stbtt::TrueType::GetNumberOfFonts/GetFontOffsetForIndex - TTC header 
     // Minimal TTC header:
     // 'ttcf' + version(0x00010000) + numFonts(2) + offsets[0]=0x20 offsets[1]=0x40
     std::uint8_t ttc[32]{};
-    ttc[0] = 't'; ttc[1] = 't'; ttc[2] = 'c'; ttc[3] = 'f';
-    ttc[4] = 0x00; ttc[5] = 0x01; ttc[6] = 0x00; ttc[7] = 0x00;
-    ttc[8] = 0x00; ttc[9] = 0x00; ttc[10] = 0x00; ttc[11] = 0x02;
+    ttc[0]  = 't';   ttc[1] = 't';  ttc[2]  = 'c';  ttc[3]  = 'f';
+    ttc[4]  = 0x00;  ttc[5] = 0x01; ttc[6]  = 0x00; ttc[7]  = 0x00;
+    ttc[8]  = 0x00;  ttc[9] = 0x00; ttc[10] = 0x00; ttc[11] = 0x02;
     ttc[12] = 0x00; ttc[13] = 0x00; ttc[14] = 0x00; ttc[15] = 0x20;
     ttc[16] = 0x00; ttc[17] = 0x00; ttc[18] = 0x00; ttc[19] = 0x40; 
 
