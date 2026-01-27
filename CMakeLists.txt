@@ -287,13 +287,32 @@ set(SOURCES_TRUETYPE_CATCH
     "stb_truetype/stb_truetype.h"   # original for byte-diff tests
 )
 
+# truetype stream
+set(SOURCES_TRUETYPE_STREAM
+    "stb_truetype_stream/stb_truetype_stream.hpp"
+
+    "stb_truetype_stream/codepoints/stbtt_codepoints.hpp"
+    "stb_truetype_stream/codepoints/stbtt_codepoints_stream.hpp"
+
+    "stb_truetype_stream/codepoints/script/arabic.hpp"
+    "stb_truetype_stream/codepoints/script/cjk.hpp"
+    "stb_truetype_stream/codepoints/script/cyrillic.hpp"
+    "stb_truetype_stream/codepoints/script/devanagari.hpp"
+    "stb_truetype_stream/codepoints/script/greek.hpp"
+    "stb_truetype_stream/codepoints/script/hebrew.hpp"
+    "stb_truetype_stream/codepoints/script/jouyou_kanji.hpp"
+    "stb_truetype_stream/codepoints/script/kana.hpp"
+    "stb_truetype_stream/codepoints/script/latin.hpp"
+)
+
 # image
 set(SOURCES_IMAGE         "stb_image/stb_image.hpp")
 
 # image write
 set(SOURCES_IMAGE_WRITE
     "stb_image_write/stb_image_write.hpp"
-    "stb_image_write/detail/libc_integration.hpp")
+    "stb_image_write/detail/libc_integration.hpp"
+    "stb_image_write/detail/zlib.hpp")
 set(SOURCES_IMAGE_WRITE_CATCH
     ${SOURCES_IMAGE_WRITE}
     "stb_image_write/stb_image_write.h"   # original for byte-diff tests
@@ -305,10 +324,11 @@ set(SOURCES_IMAGE_RESIZE2 "stb_image_resize2/stb_image_resize2.hpp")
 # -----------------------------------------------------------------------------
 # Header-only interface targets
 # -----------------------------------------------------------------------------
-stb_add_header_only(truetype      ${SOURCES_TRUETYPE})
-stb_add_header_only(image         ${SOURCES_IMAGE})
-stb_add_header_only(image_write   ${SOURCES_IMAGE_WRITE})
-stb_add_header_only(image_resize2 ${SOURCES_IMAGE_RESIZE2})
+stb_add_header_only(truetype        ${SOURCES_TRUETYPE})
+stb_add_header_only(truetype_stream ${SOURCES_TRUETYPE_STREAM})
+stb_add_header_only(image           ${SOURCES_IMAGE})
+stb_add_header_only(image_write     ${SOURCES_IMAGE_WRITE})
+stb_add_header_only(image_resize2   ${SOURCES_IMAGE_RESIZE2})
 
 # -----------------------------------------------------------------------------
 # Freestanding examples
@@ -320,6 +340,22 @@ stb_add_test_exe(tt_example
     HEADERS ${SOURCES_TRUETYPE}
     LIBS truetype
 )
+
+# truetype stream (one character)
+stb_add_test_exe(tt_stream_example
+    CPP "test/stbtt_stream_example.cpp"
+    HEADERS ${SOURCES_TRUETYPE_STREAM}
+    LIBS truetype_stream
+)
+
+# truetype stream (whole bitmap)
+stb_add_test_exe(tt_stream_bitmap_example
+    CPP "test/stbtt_stream_bitmap_example.cpp"
+    HEADERS ${SOURCES_TRUETYPE_STREAM}
+    LIBS truetype_stream
+         image_write
+)
+
 
 # image
 stb_add_test_exe(i_example

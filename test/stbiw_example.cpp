@@ -16,7 +16,6 @@ extern "C" void* memset(void* dst, int val, size_t sz) {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-
 namespace {
 
     using u8 = unsigned char;
@@ -37,8 +36,7 @@ namespace {
 
         while (remaining) {
             DWORD chunk_written = 0;
-            // WriteFile accepts DWORD size, so write chunks
-            DWORD chunk = remaining;
+            DWORD chunk = remaining; // WriteFile uses DWORD
             if (!WriteFile(s->h, p, chunk, &chunk_written, NULL)) {
                 s->ok = false;
                 return;
@@ -53,42 +51,122 @@ namespace {
         }
     }
 
+    static bool open_sink(FileSink& sink, const wchar_t* path) {
+        sink = {};
+        sink.h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        return sink.h != INVALID_HANDLE_VALUE;
+    }
+
+    static void close_sink(FileSink& sink) {
+        if (sink.h != INVALID_HANDLE_VALUE) {
+            CloseHandle(sink.h);
+            sink.h = INVALID_HANDLE_VALUE;
+        }
+    }
+
     static bool write_file_bmp(const wchar_t* path, const void* pixels, int w, int h, int comp, bool flip) {
         FileSink sink;
-        sink.h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (sink.h == INVALID_HANDLE_VALUE) return false;
+        if (!open_sink(sink, path)) return false;
 
         stbiw::Writer wr;
         wr.start_callbacks(&win32_write_cb, &sink);
         wr.set_flip_vertically(flip);
 
-        const bool ok = wr.write_bmp_core(w, h, comp, pixels);
+        const bool ok = wr.write_bmp(w, h, comp, pixels);
         wr.flush();
 
-        CloseHandle(sink.h);
-        sink.h = INVALID_HANDLE_VALUE;
-
+        close_sink(sink);
         return ok && sink.ok;
     }
 
     static bool write_file_tga(const wchar_t* path, const void* pixels, int w, int h, int comp, bool flip, bool rle) {
         FileSink sink;
-        sink.h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (sink.h == INVALID_HANDLE_VALUE) return false;
+        if (!open_sink(sink, path)) return false;
 
         stbiw::Writer wr;
         wr.start_callbacks(&win32_write_cb, &sink);
         wr.set_flip_vertically(flip);
         wr.set_tga_rle(rle);
 
-        const bool ok = wr.write_tga_core(w, h, comp, pixels);
+        const bool ok = wr.write_tga(w, h, comp, pixels);
         wr.flush();
 
-        CloseHandle(sink.h);
-        sink.h = INVALID_HANDLE_VALUE;
+        close_sink(sink);
+        return ok && sink.ok;
+    }
+
+    static bool write_file_png(const wchar_t* path,
+        const void* pixels,
+        int w, int h, int comp,
+        bool flip,
+        int stride_bytes,
+        int compression_level,
+        int force_filter /* -1 auto, 0..4 */) {
+        FileSink sink;
+        if (!open_sink(sink, path)) return false;
+
+        stbiw::Writer wr;
+        wr.start_callbacks(&win32_write_cb, &sink);
+        wr.set_flip_vertically(flip);
+        wr.set_png_compression_level(compression_level);
+        wr.set_force_png_filter(force_filter);
+
+        const bool ok = wr.write_png(w, h, comp, pixels, stride_bytes);
+        wr.flush();
+
+        close_sink(sink);
+        return ok && sink.ok;
+    }
+
+    static bool write_file_png_stream_uncompressed(
+        const wchar_t* path,
+        const void* pixels,
+        int w, int h, int comp,
+        bool flip,
+        int stride_bytes
+    ) {
+        FileSink sink;
+        if (!open_sink(sink, path)) return false;
+
+        stbiw::Writer wr;
+        wr.start_callbacks(&win32_write_cb, &sink);
+        wr.set_flip_vertically(flip);
+
+        // --- scratch size ---
+        const int row_bytes = w * comp;
+        const int idat_buf_bytes = 16 * 1024; // 16 KB is a good default
+
+        const size_t scratch_bytes =
+            (size_t)row_bytes * 3u + (size_t)idat_buf_bytes;
+
+        void* scratch = VirtualAlloc(
+            nullptr,
+            scratch_bytes,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_READWRITE
+        );
+        if (!scratch) {
+            close_sink(sink);
+            return false;
+        }
+
+        const bool ok = wr.write_png_stream_uncompressed(
+            w, h, comp,
+            pixels,
+            stride_bytes,
+            scratch,
+            scratch_bytes,
+            idat_buf_bytes
+        );
+
+        wr.flush();
+
+        VirtualFree(scratch, 0, MEM_RELEASE);
+        close_sink(sink);
 
         return ok && sink.ok;
     }
+
 
     static inline void set_px_rgba(u8* img, int w, int x, int y, u8 r, u8 g, u8 b, u8 a) {
         const u32 i = (u32)(y * w + x) * 4u;
@@ -101,7 +179,6 @@ namespace {
     static void draw_demo_image(u8* img, int w, int h) {
         // 1) Background: grey RGB, alpha gradient top->bottom
         for (int y = 0; y < h; ++y) {
-            // alpha: 255 -> 0
             u8 a = 0;
             if (h <= 1) a = 255;
             else {
@@ -130,8 +207,7 @@ namespace {
 } // namespace
 
 #ifndef CONSOLE
-// entry
-int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     const int W = 512;
     const int H = 256;
     const int COMP = 4; // RGBA
@@ -146,28 +222,55 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
 
     draw_demo_image(img, W, H);
 
-    // Where to write images:
-    // For demo — next to .exe (current dir related to the process).
+    // output next to .exe
     const wchar_t* bmp_path = L"demo_rgba.bmp";
     const wchar_t* tga_path = L"demo_rgba.tga";
+    const wchar_t* png_path = L"demo_rgba.png";
+    const wchar_t* png_stream_uncompressed_path = L"demo_rgba_(stream_uncompressed).png";
+
     const bool flip = false;
 
     const bool ok_bmp = write_file_bmp(bmp_path, img, W, H, COMP, flip);
-    const bool ok_tga = write_file_tga(tga_path, img, W, H, COMP, flip, /*rle*/true);
+    const bool ok_tga = write_file_tga(tga_path, img, W, H, COMP, flip, /*rle*/ true);
+
+    // PNG:
+    // stride_bytes=0 => tightly packed rows (W * COMP)
+    // compression_level: 8
+    // force_filter: -1 => auto
+    const bool ok_png = write_file_png(png_path, img, W, H, COMP, flip,
+        /*stride_bytes*/ 0,
+        /*compression_level*/ 8,
+        /*force_filter*/ -1);
+    const bool ok_png_stream_uncompressed = write_file_png_stream_uncompressed(
+        png_stream_uncompressed_path,
+        img,
+        W, H,
+        COMP,
+        flip,
+        /*stride_bytes*/ 0
+    );
 
     VirtualFree(img, 0, MEM_RELEASE);
 
-    if (!ok_bmp || !ok_tga) {
-        MessageBoxW(NULL, L"Write failed (BMP or TGA)", L"stbiw", MB_ICONERROR);
+    if (!ok_bmp || !ok_tga || !ok_png || !ok_png_stream_uncompressed) {
+        MessageBoxW(NULL, L"Write failed (BMP/TGA/PNG/PNG-stream)", L"stbiw", MB_ICONERROR);
         return 2;
     }
 
-    MessageBoxW(NULL, L"Wrote demo_rgba.bmp and demo_rgba.tga", L"stbiw", MB_OK);
+    MessageBoxW(
+        NULL,
+        L"Wrote:\n"
+            L"demo_rgba.bmp\n"
+            L"demo_rgba.tga\n"
+            L"demo_rgba.png\n"
+            L"demo_rgba_(stream_uncompressed).png",
+        L"stbiw",
+        MB_OK
+    );
     return 0;
-    ExitProcess(0);
 }
-#else // defined CONSOLE
+#else
 # error "This test runs in NoConsole mode only"
 #endif
 
-#endif // ifdef _WIN32
+#endif // _WIN32

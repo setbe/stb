@@ -7,6 +7,7 @@
 #include <string>
 
 // C++ port
+#define STBI_FREESTANDING
 #include "../stb_image_write/stb_image_write.hpp"
 
 // C reference
@@ -216,7 +217,7 @@ namespace {
         wr.start_callbacks(&cb_const, &out);
         wr.set_flip_vertically(flip);
 
-        const bool ok = wr.write_bmp_core(w, h, comp, pixels.data());
+        const bool ok = wr.write_bmp(w, h, comp, pixels.data());
         wr.flush();
 
         REQUIRE(ok);
@@ -254,7 +255,7 @@ namespace {
         wr.set_tga_rle(rle);
         wr.set_flip_vertically(flip);
 
-        const bool ok = wr.write_tga_core(w, h, comp, pixels.data());
+        const bool ok = wr.write_tga(w, h, comp, pixels.data());
         wr.flush();
 
         REQUIRE(ok);
@@ -473,22 +474,22 @@ TEST_CASE("TGA: C++ writer rejects invalid args strictly", "[tga][invalid][stric
     wr.start_callbacks(&cb_const, &sink);
 
     SECTION("null data") {
-        REQUIRE_FALSE(wr.write_tga_core(1, 1, 3, nullptr));
+        REQUIRE_FALSE(wr.write_tga(1, 1, 3, nullptr));
         REQUIRE(sink.empty());
     }
 
     SECTION("bad comp") {
         std::vector<std::uint8_t> px(4);
-        REQUIRE_FALSE(wr.write_tga_core(1, 1, 0, px.data()));
-        REQUIRE_FALSE(wr.write_tga_core(1, 1, 5, px.data()));
+        REQUIRE_FALSE(wr.write_tga(1, 1, 0, px.data()));
+        REQUIRE_FALSE(wr.write_tga(1, 1, 5, px.data()));
     }
 
     SECTION("non-positive dims") {
         std::vector<std::uint8_t> px(4);
-        REQUIRE_FALSE(wr.write_tga_core(0, 1, 1, px.data()));
-        REQUIRE_FALSE(wr.write_tga_core(1, 0, 1, px.data()));
-        REQUIRE_FALSE(wr.write_tga_core(-1, 1, 1, px.data()));
-        REQUIRE_FALSE(wr.write_tga_core(1, -1, 1, px.data()));
+        REQUIRE_FALSE(wr.write_tga(0, 1, 1, px.data()));
+        REQUIRE_FALSE(wr.write_tga(1, 0, 1, px.data()));
+        REQUIRE_FALSE(wr.write_tga(-1, 1, 1, px.data()));
+        REQUIRE_FALSE(wr.write_tga(1, -1, 1, px.data()));
     }
 }
 
@@ -618,7 +619,158 @@ TEST_CASE("BMP: negative dims return false (C++ writer)", "[bmp][invalid][strict
 
     std::vector<std::uint8_t> px(16, 0x7F);
 
-    REQUIRE_FALSE(wr.write_bmp_core(-1, 1, 3, px.data()));
-    REQUIRE_FALSE(wr.write_bmp_core(1, -1, 3, px.data()));
+    REQUIRE_FALSE(wr.write_bmp(-1, 1, 3, px.data()));
+    REQUIRE_FALSE(wr.write_bmp(1, -1, 3, px.data()));
+    REQUIRE(sink.empty());
+}
+
+
+
+TEST_CASE("PNG: byte-diff vs stb (filter NONE, no flip), comp=1..4", "[png][byte-diff][strict]") {
+    const int w = 6, h = 5;
+
+    for (int comp = 1; comp <= 4; ++comp) {
+        auto pixels = make_pattern(w, h, comp);
+
+        std::vector<std::uint8_t> a, b;
+
+        // ---- C++ writer ----
+        {
+            stbiw::Writer wr;
+            wr.start_callbacks(&cb_const, &a);
+            wr.set_png_compression_level(0);
+            wr.set_force_png_filter(0); // NONE
+            wr.set_flip_vertically(false);
+
+            REQUIRE(wr.write_png(w, h, comp, pixels.data(), 0));
+            wr.flush();
+        }
+
+        // ---- stb C writer ----
+        {
+            stbi_write_png_compression_level = 0;
+            stbi_write_force_png_filter = 0;
+            stbi_flip_vertically_on_write(0);
+
+            REQUIRE(stbi_write_png_to_func(
+                &cb_legacy, &b, w, h, comp, pixels.data(), 0
+            ));
+        }
+
+        REQUIRE(a == b);
+    }
+}
+
+
+TEST_CASE("PNG: byte-diff vs stb (filter NONE, flip on)", "[png][byte-diff][flip][strict]") {
+    const int w = 7, h = 4;
+
+    for (int comp = 1; comp <= 4; ++comp) {
+        auto pixels = make_pattern(w, h, comp);
+        std::vector<std::uint8_t> a, b;
+
+        {
+            stbiw::Writer wr;
+            wr.start_callbacks(&cb_const, &a);
+            wr.set_png_compression_level(0);
+            wr.set_force_png_filter(0);
+            wr.set_flip_vertically(true);
+            REQUIRE(wr.write_png(w, h, comp, pixels.data(), 0));
+            wr.flush();
+        }
+
+        {
+            stbi_write_png_compression_level = 0;
+            stbi_write_force_png_filter = 0;
+            stbi_flip_vertically_on_write(1);
+            REQUIRE(stbi_write_png_to_func(
+                &cb_legacy, &b, w, h, comp, pixels.data(), 0
+            ));
+        }
+
+        REQUIRE(a == b);
+    }
+}
+
+
+
+
+TEST_CASE("PNG: byte-diff vs stb (custom stride)", "[png][stride][strict]") {
+    const int w = 5, h = 3, comp = 3;
+    const int stride = w * comp + 7; // deliberately padded
+
+    std::vector<std::uint8_t> pixels((std::size_t)stride * h);
+    auto base = make_pattern(w, h, comp);
+
+    for (int y = 0; y < h; ++y) {
+        std::memcpy(&pixels[y * stride],
+            &base[y * w * comp],
+            (std::size_t)w * comp);
+    }
+
+    std::vector<std::uint8_t> a, b;
+
+    {
+        stbiw::Writer wr;
+        wr.start_callbacks(&cb_const, &a);
+        wr.set_png_compression_level(0);
+        wr.set_force_png_filter(0);
+        REQUIRE(wr.write_png(w, h, comp, pixels.data(), stride));
+        wr.flush();
+    }
+
+    {
+        stbi_write_png_compression_level = 0;
+        stbi_write_force_png_filter = 0;
+        REQUIRE(stbi_write_png_to_func(
+            &cb_legacy, &b, w, h, comp, pixels.data(), stride
+        ));
+    }
+
+    REQUIRE(a == b);
+}
+
+
+
+
+TEST_CASE("PNG: 1x1 strict byte-diff, comp=1..4", "[png][1x1][strict]") {
+    const int w = 1, h = 1;
+
+    for (int comp = 1; comp <= 4; ++comp) {
+        auto pixels = make_pattern(w, h, comp);
+        std::vector<std::uint8_t> a, b;
+
+        stbiw::Writer wr;
+        wr.start_callbacks(&cb_const, &a);
+        wr.set_png_compression_level(0);
+        wr.set_force_png_filter(0);
+        REQUIRE(wr.write_png(w, h, comp, pixels.data(), 0));
+        wr.flush();
+
+        stbi_write_png_compression_level = 0;
+        stbi_write_force_png_filter = 0;
+        REQUIRE(stbi_write_png_to_func(
+            &cb_legacy, &b, w, h, comp, pixels.data(), 0
+        ));
+
+        REQUIRE(a == b);
+    }
+}
+
+
+
+TEST_CASE("PNG: C++ writer rejects invalid args strictly", "[png][invalid][strict]") {
+    stbiw::Writer wr;
+    std::vector<std::uint8_t> sink;
+    wr.start_callbacks(&cb_const, &sink);
+
+    std::vector<std::uint8_t> px(16);
+
+    REQUIRE_FALSE(wr.write_png(0, 1, 3, px.data(), 0));
+    REQUIRE_FALSE(wr.write_png(1, 0, 3, px.data(), 0));
+    REQUIRE_FALSE(wr.write_png(1, 1, 0, px.data(), 0));
+    REQUIRE_FALSE(wr.write_png(1, 1, 5, px.data(), 0));
+    REQUIRE_FALSE(wr.write_png(1, 1, 3, nullptr, 0));
+
     REQUIRE(sink.empty());
 }
