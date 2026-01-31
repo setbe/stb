@@ -46,11 +46,11 @@ namespace stbtt_codepoints {
     }
 
     // ========================================================================
-    // PASS 1: COUNT
+    // PASS 1: PLAN
     // ========================================================================
 
     template<class FontT>
-    static inline uint32_t CountGlyphs(const FontT& font,
+    static inline uint32_t PlanGlyphs(const FontT& font,
         Script script) noexcept {
         const ScriptDescriptor& d = GetScriptDescriptor(script);
         uint32_t count = 0;
@@ -76,30 +76,30 @@ namespace stbtt_codepoints {
 
     // helper for variadic usage (OUTSIDE core API)
     template<class FontT>
-    static inline uint32_t CountGlyphs(const FontT& font,
+    static inline uint32_t PlanGlyphs(const FontT& font,
                                              Script s0,
                                              Script s1) noexcept {
-        return CountGlyphs(font, s0)
-            + CountGlyphs(font, s1);
+        return PlanGlyphs(font, s0)
+            + PlanGlyphs(font, s1);
     }
 
     template<class FontT, class... Rest>
-    static inline uint32_t CountGlyphs(const FontT& font,
+    static inline uint32_t PlanGlyphs(const FontT& font,
                                              Script s0,
                                              Script s1,
                                              Rest... rest) noexcept {
-        return CountGlyphs(font, s0)
-            + CountGlyphs(font, s1, rest...);
+        return PlanGlyphs(font, s0)
+            + PlanGlyphs(font, s1, rest...);
     }
 
     // ========================================================================
-    // PASS 2: STREAM
+    // PASS 2: BUILD
     // ========================================================================
 
     template<class FontT, class SinkT>
-    static inline void StreamGlyphs(const FontT& font,
-                                          Script script,
-                                          SinkT& sink) noexcept {
+    static inline void BuildGlyphs(const FontT& font,
+                                         Script script,
+                                         SinkT& sink) noexcept {
         const ScriptDescriptor& d = GetScriptDescriptor(script);
 
         // ranges
