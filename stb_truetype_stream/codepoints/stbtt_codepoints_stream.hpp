@@ -77,17 +77,17 @@ namespace stbtt_codepoints {
     // helper for variadic usage (OUTSIDE core API)
     template<class FontT>
     static inline uint32_t PlanGlyphs(const FontT& font,
-                                             Script s0,
-                                             Script s1) noexcept {
+                                            Script s0,
+                                            Script s1) noexcept {
         return PlanGlyphs(font, s0)
             + PlanGlyphs(font, s1);
     }
 
     template<class FontT, class... Rest>
     static inline uint32_t PlanGlyphs(const FontT& font,
-                                             Script s0,
-                                             Script s1,
-                                             Rest... rest) noexcept {
+                                            Script s0,
+                                            Script s1,
+                                            Rest... rest) noexcept {
         return PlanGlyphs(font, s0)
             + PlanGlyphs(font, s1, rest...);
     }

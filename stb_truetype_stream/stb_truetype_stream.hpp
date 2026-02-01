@@ -44,11 +44,11 @@ SOFTWARE.
 
 namespace stbtt_stream {
 enum class DfMode : uint8_t { SDF = 1, MSDF = 3 };
+enum : uint8_t { EDGE_R = 0, EDGE_G = 1, EDGE_B = 2 };
+
 // some of the values for the IDs are below; for more see the truetype spec:
-// Apple: http://developer.apple.com/textfonts/TTRefMan/RM06/Chap6name.html
-//   (archive) https://web.archive.org/web/20090113004145/http://developer.apple.com/textfonts/TTRefMan/RM06/Chap6name.html
-// Microsoft: http://www.microsoft.com/typography/otspec/name.htm
-//   (archive) https://web.archive.org/web/20090213110553/http://www.microsoft.com/typography/otspec/name.htm
+// Apple (archive) https://web.archive.org/web/20090113004145/http://developer.apple.com/textfonts/TTRefMan/RM06/Chap6name.html
+// Microsoft (archive) https://web.archive.org/web/20090213110553/http://www.microsoft.com/typography/otspec/name.htm
 enum class PlatformId {
     Unicode = 0,
     Mac = 1,
@@ -62,26 +62,29 @@ enum class EncodingIdMicrosoft {
     Unicode_Full = 10
 };
 
-struct BBox {
-    float x_min, y_min;
-    float x_max, y_max;
+struct SkylineNode {
+    uint16_t x;
+    uint16_t y;
+    uint16_t w;
+};
+struct Skyline {
+    SkylineNode* nodes;
+    int node_count;
+    int node_cap;
+    uint16_t width;  // atlas side
+};
+struct PlanResult {
+    bool ok;
+    uint32_t planned;
+    uint16_t atlas_side;
+    uint16_t max_points;
+    uint16_t max_w;
+    uint16_t max_h;
+    uint32_t max_area;
 };
 struct GlyphHorMetrics {
     int advance;
     int lsb; // left side bearing
-};
-struct GlyphInfo {
-    uint16_t atlas_x;
-    uint16_t atlas_y;
-    GlyphHorMetrics metrics;
-};
-struct CodepointGlyph {
-    uint32_t codepoint;
-    uint16_t glyph_index;
-};
-struct GlyphMetrics {
-    int advance;
-    int lsb;
 };
 struct GlyphRect {
     uint16_t x, y;   // in atlas pixels
@@ -103,6 +106,9 @@ struct GlyphPlanInfo {
     bool is_empty;
 };
 struct GlyphScratch {
+    static constexpr uint16_t MAX_XS = 256;
+    static constexpr uint16_t VISIT_CAP = 512;
+
     uint8_t* flags;  // [max_points]
     int16_t* px;     // [max_points]
     int16_t* py;     // [max_points]
@@ -110,45 +116,95 @@ struct GlyphScratch {
     uint16_t* min_d2; // [max_area]
     uint8_t* inside; // [max_area]
     float* xs;     // [max_xs]
+
+    // ---- composite recursion guard (optional) ----
+    uint16_t* visit;      // [visit_cap]
+    uint16_t  visit_n;
 };
+
+struct PlanInput {
+    DfMode   mode;
+    uint16_t pixel_height;   // <=64
+    float    spread_px;
+    // codepoints source:
+    const uint32_t* codepoints;
+    uint32_t codepoint_count;
+};
+
+// A "view" onto one user-provided memory block.
+// User never allocates glyphs/nodes/scratch separately.
 struct FontPlan {
-    DfMode mode;
-    uint8_t cell_size;     // <=64
-    float spread;          // font units
-    float scale;           // pixels per font unit (typically ScaleForPixelHeight(cell_size))
+    // user-facing parameters (filled by Plan)
+    DfMode     mode{};
+    uint16_t   pixel_height{};
+    float      scale{};       // pixels per font unit
+    float      spread_fu{};   // spread in font units
 
-    uint32_t glyph_count;  // planned glyphs
-    uint32_t max_area;     // max rect.w*rect.h across glyphs
-    uint16_t max_points;   // for scratch sizing
-    uint16_t max_xs;       // scanline intersection cap
+    // results (filled by Plan)
+    uint16_t   atlas_side{};  // square side in pixels (no padding)
+    uint32_t   glyph_count{};
+    uint16_t   max_points{};
+    uint32_t   max_area{};
 
-    uint16_t atlas_side;   // square side in pixels (no padding)
+    // ---- internal pointers into the same plan memory block ----
+    void*  _mem{};
+    size_t _mem_bytes{};
 
-    GlyphPlan* glyphs;     // user-allocated array [glyph_count]
+    GlyphPlan*   _glyphs{};
+    SkylineNode* _nodes{};
+    uint32_t     _node_cap{};
+
+    void* _scratch_mem{};
+    size_t     _scratch_bytes{};
 };
-struct AtlasInfo {
-    uint32_t glyph_count;
 
-    uint32_t width;   // pixels
 
-    uint32_t rows;
+static inline uint16_t pack_nd2_u16(float d2, float spread) noexcept {
+    // nd2 = clamp(d2 / spread^2, 0..1) -> u16
+    const float s2 = spread > 0.f ? (spread * spread) : 1.f;
+    float nd2 = d2 / s2;
+    if (nd2 < 0.f) nd2 = 0.f;
+    if (nd2 > 1.f) nd2 = 1.f;
+    return (uint16_t)(nd2 * 65535.f + 0.5f);
+}
+static inline uint16_t* scratch_d2_r(const GlyphScratch& s) noexcept { return s.min_d2; }
+static inline uint16_t* scratch_d2_g(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area; }
+static inline uint16_t* scratch_d2_b(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area * 2; }
 
-    uint16_t cells_per_row;
-    uint8_t cell_size;   // size of one glyph cell in pixels (<=64)
-    uint8_t padding;     // pixels between cells
+
+// Very small bump allocator for "plan_mem" block.
+struct MemArena {
+    uint8_t* base;
+    size_t   cap;
+    size_t   off;
+
+    inline void init(void* mem, size_t bytes) noexcept {
+        base = (uint8_t*)mem;
+        cap = bytes;
+        off = 0;
+    }
+
+    inline void* take(size_t bytes, size_t align) noexcept {
+        const size_t mask = align - 1;
+        size_t aligned = (off + mask) & ~mask;
+        if (aligned + bytes > cap) return nullptr;
+        void* p = base + aligned;
+        off = aligned + bytes;
+        return p;
+    }
 };
+
 
 static constexpr size_t align_up(size_t v, size_t a) noexcept { return (v + (a - 1)) & ~(a - 1); }
 static inline size_t glyph_scratch_bytes(uint16_t max_points,
                                          uint32_t max_area,
-                                         uint16_t max_xs,
                                          DfMode mode) noexcept {
     size_t off = 0;
 
     off = align_up(off, 16); off += max_points * sizeof(uint8_t);  // flags
     off = align_up(off, 16); off += max_points * sizeof(int16_t);  // px
     off = align_up(off, 16); off += max_points * sizeof(int16_t);  // py
-
+    
     if (mode == DfMode::SDF) {
         off = align_up(off, 16); off += (size_t)max_area * sizeof(uint16_t); // min_d2
     }
@@ -156,14 +212,15 @@ static inline size_t glyph_scratch_bytes(uint16_t max_points,
         off = align_up(off, 16); off += (size_t)max_area * sizeof(uint16_t) * 3; // min_d2_r/g/b
     }
     off = align_up(off, 16); off += (size_t)max_area * sizeof(uint8_t); // inside
-    off = align_up(off, 16); off += (size_t)max_xs * sizeof(float);     // xs
+    off = align_up(off, 16); off += (size_t)GlyphScratch::MAX_XS * sizeof(float);
+    off = align_up(off, 16); off += (size_t)GlyphScratch::VISIT_CAP * sizeof(uint16_t);
 
     return align_up(off, 16);
 }
+
 static inline GlyphScratch bind_glyph_scratch(void* mem,
                                               uint16_t max_points,
                                               uint32_t max_area,
-                                              uint16_t max_xs,
                                               DfMode mode) noexcept {
     uint8_t* p = (uint8_t*)mem;
     size_t off = 0;
@@ -180,12 +237,32 @@ static inline GlyphScratch bind_glyph_scratch(void* mem,
     s.px    = (int16_t*)take((size_t)max_points * sizeof(int16_t), 16);
     s.py    = (int16_t*)take((size_t)max_points * sizeof(int16_t), 16);
 
-    s.min_d2 = (uint16_t*)take((size_t)max_area * sizeof(uint16_t), 16);
+    const size_t d2_mult = (mode == DfMode::SDF) ? 1u : 3u;
+    s.min_d2 = (uint16_t*)take((size_t)max_area * sizeof(uint16_t) * d2_mult, 16);
     s.inside = (uint8_t*) take((size_t)max_area * sizeof(uint8_t), 16);
-    s.xs     = (float*)   take((size_t)max_xs   * sizeof(float), 16);
-
-    (void)mode; // @TODO MSDF
+    s.xs     = (float*)   take((size_t)GlyphScratch::MAX_XS * sizeof(float), 16);
+    s.visit  = (uint16_t*)take((size_t)GlyphScratch::VISIT_CAP * sizeof(uint16_t), 16);
+    s.visit_n = 0;
     return s;
+}
+
+// helper: bytes for plan block (glyphs + nodes + scratch)
+static inline size_t plan_block_bytes(uint32_t glyph_count,
+                                      uint32_t node_cap,
+                                      uint16_t max_points,
+                                      uint32_t max_area,
+                                      DfMode mode) noexcept
+{
+    size_t off = 0;
+    auto aup = [](size_t v, size_t a) noexcept { return (v + (a - 1)) & ~(a - 1); };
+
+    off = aup(off, 16); off += (size_t)glyph_count * sizeof(GlyphPlan);
+    off = aup(off, 16); off += (size_t)node_cap   * sizeof(SkylineNode);
+
+    const size_t scratch_bytes = glyph_scratch_bytes(max_points, max_area, mode);
+    off = aup(off, 16); off += scratch_bytes;
+
+    return aup(off, 16);
 }
 static constexpr uint32_t isqrt_u32(uint32_t x) noexcept {
     // integer sqrt floor
@@ -258,7 +335,7 @@ static inline float dist_quad_sq(float px, float py,
                                  float x0, float y0,
                                  float x1, float y1,
                                  float x2, float y2) noexcept {
-    // 4 segments is enough for UI SDF
+    // 4 segments is enough for UI DF
     float min_d = 1e30f;
     float ax = x0;
     float ay = y0;
@@ -296,9 +373,9 @@ static inline int ray_crosses(float px, float py,
     return (y1 > y0) ? 1 : -1;
 }
     
-struct SdfGrid {
-    signed char* sdf;   // [w*h]
-    int8_t* winding;    // [w*h], signed accumulator
+struct DfGrid {
+    signed char* df; // [w*h]
+    int8_t* winding; // [w*h], signed accumulator
 
     float scale;
     float max_dist;
@@ -308,9 +385,10 @@ struct SdfGrid {
 
     int w, h;
 };
-struct SdfGridFast {
+struct DfGridFast {
     uint8_t* out;          // atlas pointer (full atlas)
     uint32_t out_stride;   // atlas width in pixels
+    uint8_t  out_comp;     // 1 for SDF, 3 for MSDF
     int shift_x, shift_y;  // cell top-left in atlas
 
     int w, h;              // cell_size
@@ -320,11 +398,17 @@ struct SdfGridFast {
     float origin_x, origin_y;
 
     // per-cell scratch
-    uint16_t* min_d2;       // [w*h] (but backed by scratch max_area)
-    uint8_t* inside;        // [w*h]
+    // SDF:
+    uint16_t* d2;          // [w*h]
+    // MSDF:
+    uint16_t* d2r;         // [w*h]
+    uint16_t* d2g;
+    uint16_t* d2b;
+
+    uint8_t* inside;       // [w*h]
 };
 
-static inline void pixel_center_to_font(float& fx, float& fy, const SdfGridFast& g,
+static inline void pixel_center_to_font(float& fx, float& fy, const DfGridFast& g,
                                         int x, int y) noexcept {
     fx = g.origin_x + (x+.5f) * g.inv_scale;
     fy = g.origin_y + ((g.h-1 - y) + .5f) * g.inv_scale;
@@ -332,10 +416,10 @@ static inline void pixel_center_to_font(float& fx, float& fy, const SdfGridFast&
 
 
 
-struct SdfWindingPass {
-    SdfGrid& g;
+struct DfWindingPass {
+    DfGrid& g;
 
-    explicit SdfWindingPass(SdfGrid& grid) noexcept : g(grid) {}
+    explicit DfWindingPass(DfGrid& grid) noexcept : g(grid) {}
 
     inline void begin() noexcept {
         for (int i = 0; i < g.w * g.h; ++i)
@@ -359,14 +443,14 @@ struct SdfWindingPass {
         g.origin_y = y;
     }
 };
-struct SdfDistancePass {
-    SdfGrid& g;
+struct DfDistancePass {
+    DfGrid& g;
 
-    SdfDistancePass() = delete;
-    explicit SdfDistancePass(SdfGrid& grid) noexcept : g(grid) {}
+    DfDistancePass() = delete;
+    explicit DfDistancePass(DfGrid& grid) noexcept : g(grid) {}
 
     inline void begin() noexcept {
-        for (int i = 0; i < g.w * g.h; ++i) g.sdf[i] = 127;
+        for (int i = 0; i < g.w * g.h; ++i) g.df[i] = 127;
     }
 
     inline void line(float x0, float y0, float x1, float y1) noexcept {
@@ -377,11 +461,11 @@ struct SdfDistancePass {
                 int idx = y * g.w + x;
                 float d2 = dist_line_sq(px, py, x0, y0, x1, y1);
                 float d = sqrt(d2);
-                float prev = static_cast <float> (g.sdf[idx]) / 127.0f * g.max_dist;
+                float prev = static_cast <float> (g.df[idx]) / 127.0f * g.max_dist;
                 if (d < prev) {
                     float nd = d / g.max_dist;
                     if (nd > 1) nd = 1;
-                    g.sdf[idx] = static_cast <signed char> (nd * 127);
+                    g.df[idx] = static_cast <signed char> (nd * 127);
                 }
             }
         }
@@ -392,18 +476,66 @@ struct SdfDistancePass {
     }
 };
 struct SdfDistanceBBoxPass {
-    SdfGridFast& g;
+    DfGridFast& g;
 
-    explicit SdfDistanceBBoxPass(SdfGridFast& gg) noexcept : g(gg) {}
+    explicit SdfDistanceBBoxPass(DfGridFast& gg) noexcept : g(gg) {}
 
     inline void begin() noexcept {
         const int n = g.w * g.h;
-        for (int i = 0; i < n; ++i) g.min_d2[i] = 0xFFFF;
+        for (int i = 0; i < n; ++i) g.d2[i] = 0xFFFF;
     }
     inline void set_origin(float x, float y) noexcept { g.origin_x = x; g.origin_y = y; }
 
-    inline void line(float x0, float y0, float x1, float y1) noexcept {
+    inline void line(float x0, float y0,
+                     float x1, float y1, uint8_t /*color*/) noexcept {
         // font-space bbox expanded by spread
+        float minx = (x0<x1 ? x0:x1) - g.spread;
+        float maxx = (x0>x1 ? x0:x1) + g.spread;
+        float miny = (y0<y1 ? y0:y1) - g.spread;
+        float maxy = (y0>y1 ? y0:y1) + g.spread;
+
+        int px0 = (int)((minx - g.origin_x) * g.scale);
+        int px1 = (int)((maxx - g.origin_x) * g.scale);
+        if (px0 > px1) { int t = px0; px0 = px1; px1 = t; }
+        if (px0 < 0) px0 = 0;
+        if (px1 >= g.w) px1 = g.w - 1;
+
+        // y is flipped, so we clamp by scanning all y but skip rows outside miny/maxy
+        for (int y=0; y<g.h; ++y) {
+            float fx_dummy, fy;
+            pixel_center_to_font(fx_dummy, fy, g, 0, y);
+            if (fy < miny || fy > maxy) continue;
+
+            for (int x=px0; x<=px1; ++x) {
+                float fx, fy2;
+                pixel_center_to_font(fx, fy2, g, x, y);
+
+                const float d2 = dist_line_sq(fx, fy2, x0,y0, x1,y1);
+                const uint16_t ud2 = pack_nd2_u16(d2, g.spread);
+
+                const int idx = y*g.w + x;
+                if (ud2 < g.d2[idx]) g.d2[idx] = ud2;
+            }
+        }
+    }
+};
+struct MsfDistanceBBoxPass {
+    DfGridFast& g;
+
+    explicit MsfDistanceBBoxPass(DfGridFast& gg) noexcept : g(gg) {}
+
+    inline void begin() noexcept {
+        const int n = g.w * g.h;
+        for (int i = 0; i < n; ++i) {
+            g.d2r[i] = 0xFFFF;
+            g.d2g[i] = 0xFFFF;
+            g.d2b[i] = 0xFFFF;
+        }
+    }
+    inline void set_origin(float x, float y) noexcept { g.origin_x = x; g.origin_y = y; }
+
+    inline void line(float x0, float y0,
+                     float x1, float y1, uint8_t color) noexcept {
         float minx = (x0 < x1 ? x0 : x1) - g.spread;
         float maxx = (x0 > x1 ? x0 : x1) + g.spread;
         float miny = (y0 < y1 ? y0 : y1) - g.spread;
@@ -415,7 +547,6 @@ struct SdfDistanceBBoxPass {
         if (px0 < 0) px0 = 0;
         if (px1 >= g.w) px1 = g.w - 1;
 
-        // y is flipped, so we clamp by scanning all y but skip rows outside miny/maxy
         for (int y = 0; y < g.h; ++y) {
             float fx_dummy, fy;
             pixel_center_to_font(fx_dummy, fy, g, 0, y);
@@ -425,33 +556,28 @@ struct SdfDistanceBBoxPass {
                 float fx, fy2;
                 pixel_center_to_font(fx, fy2, g, x, y);
 
-                float d2 = dist_line_sq(fx, fy2, x0, y0, x1, y1);
+                const float d2 = dist_line_sq(fx, fy2, x0, y0, x1, y1);
+                const uint16_t ud2 = pack_nd2_u16(d2, g.spread);
 
-                // normalize by spread^2
-                float inv_s2 = (g.spread > 0.f) ? (1.f / (g.spread * g.spread)) : 0.f;
-                float nd2 = d2 * inv_s2;          // 0..inf
-                if (nd2 > 1.f) nd2 = 1.f;         // clamp to spread
-                if (nd2 < 0.f) nd2 = 0.f;
-
-                uint16_t ud2 = (uint16_t)(nd2 * 65535.f + 0.5f);
-
-                int idx = y * g.w + x;
-                if (ud2 < g.min_d2[idx]) g.min_d2[idx] = ud2;;
+                const int idx = y * g.w + x;
+                if (color == EDGE_R) { if (ud2 < g.d2r[idx]) g.d2r[idx] = ud2; }
+                else if (color == EDGE_G) { if (ud2 < g.d2g[idx]) g.d2g[idx] = ud2; }
+                else { if (ud2 < g.d2b[idx]) g.d2b[idx] = ud2; }
             }
         }
     }
 };
-struct SdfSignScanlinePass {
-    SdfGridFast& g;
+
+struct DfSignScanlinePass {
+    DfGridFast& g;
 
     // scratch per row
     float* xs;      // [max_intersections]
-    int   max_xs;
     int   count;
     float scan_y;
 
-    explicit SdfSignScanlinePass(SdfGridFast& gg, float* xs_buf, int xs_cap) noexcept
-        : g(gg), xs(xs_buf), max_xs(xs_cap), count(0), scan_y(0.f) {}
+    explicit DfSignScanlinePass(DfGridFast& gg, float* xs_buf) noexcept
+        : g(gg), xs(xs_buf), count(0), scan_y(0.f) {}
 
     inline void begin() noexcept {
         // mark inside later per row
@@ -465,7 +591,7 @@ struct SdfSignScanlinePass {
         count = 0;
     }
 
-    inline void line(float x0, float y0, float x1, float y1) noexcept {
+    inline void line(float x0, float y0, float x1, float y1, uint8_t /*edge_color*/) noexcept {
         // standard half-open rule to avoid double counting vertices
         float ay = y0, by = y1;
         float ax = x0, bx = x1;
@@ -476,7 +602,7 @@ struct SdfSignScanlinePass {
         float t = (scan_y - ay) / (by - ay);
         float ix = ax + t * (bx - ax);
 
-        if (count < max_xs) xs[count++] = ix;
+        if (count < GlyphScratch::MAX_XS) xs[count++] = ix;
     }
 
     static inline void sort_small(float* a, int n) noexcept {
@@ -517,22 +643,14 @@ template<class Sink>
 static void emit_quad(Sink& s,
                       float x0, float y0, float x1, float y1,
                       float x2, float y2, float flat) noexcept {
-    
-
-    float dx, dy;
-    {
-        const float mx = (x0+2*x1+x2)*.25f;   const float lx = (x0+x2)*.5f;
-        const float my = (y0+2*y1+y2)*.25f;   const float ly = (y0+y2)*.5f;
-                    dx = mx-lx;                           dy = my-ly;
-    }
+    const float mx = (x0 + 2*x1 + x2) * .25f,  lx = (x0+x2)*.5f,  dx = mx-lx;
+    const float my = (y0 + 2*y1 + y2) * .25f,  ly = (y0+y2)*.5f,  dy = my-ly;
     if (dx*dx + dy*dy <= flat) {
-        s.line(x0,y0, x2,y2);
+        s.line(x2,y2);
         return;
     }
-
-    const float x01 = (x0+x1)*.5f;   const float x12 = (x1+x2)*.5f;
-    const float y01 = (y0+y1)*.5f;   const float y12 = (y1+y2)*.5f;
-    const float xo  = (x01+x12)*.5f; const float yo  = (y01+y12)*.5f;
+    const float x01 = (x0+x1)*.5f,  x12 = (x1+x2)*.5f,  xo = (x01+x12)*.5f;
+    const float y01 = (y0+y1)*.5f,  y12 = (y1+y2)*.5f,  yo = (y01+y12)*.5f;
     emit_quad(s, x0,y0, x01,y01, xo,yo, flat);
     emit_quad(s, xo,yo, x12,y12, x2,y2, flat);
 }
@@ -554,42 +672,44 @@ struct GlyphSink {
     virtual void cubic(float, float, float, float, float, float) noexcept = 0;
     virtual void close() noexcept = 0;
     virtual void set_origin(float x, float y) noexcept = 0;
+    virtual void set_edge_color(uint8_t) noexcept {}
     virtual ~GlyphSink() noexcept = default;
 };
-template<class Pass> struct SdfSink final : GlyphSink {
+template<class Pass>
+struct DfSink final : GlyphSink {
     Pass& pass;
     float x{}, y{};
     float sx{}, sy{};
     bool open{ false };
+    uint8_t edge_color{ EDGE_R }; // default, can be changed outside
 
-    SdfSink() = delete;
-    explicit SdfSink(Pass& p) noexcept : pass(p) {}
+    DfSink() = delete;
+    explicit DfSink(Pass& p) noexcept : pass(p) {}
 
     inline void begin() noexcept override { pass.begin(); }
-    inline void set_origin(float x, float y) noexcept override { pass.set_origin(x,y); }
+    inline void set_origin(float ox, float oy) noexcept override { pass.set_origin(ox,oy); }
+    inline void set_edge_color(uint8_t c) noexcept override { edge_color = c; }
 
     inline void move(float nx, float ny) noexcept override {
-        if (open && (x != sx || y != sy))
-            pass.line(x,y, sx,sy);
         x = sx = nx;
         y = sy = ny;
         open = true;
     }
 
     inline void line(float nx, float ny) noexcept override {
-        pass.line(x,y, nx,ny);
+        pass.line(x,y, nx,ny, edge_color);
         x = nx; y = ny;
     }
 
     inline void quad(float cx, float cy,
                      float nx, float ny) noexcept override {
-        emit_quad(pass, x,y, cx,cy, nx,ny, 0.25f);
+        emit_quad(*this, x,y, cx,cy, nx,ny, /*flat*/0.25f);
         x = nx; y = ny;
     }
 
     inline void close() noexcept override {
         if (open && (x != sx || y != sy))
-            pass.line(x,y, sx,sy);
+            pass.line(x,y, sx,sy, edge_color);
         open = false;
     }
 
@@ -603,13 +723,9 @@ template<class Pass> struct SdfSink final : GlyphSink {
         for (int i=1; i<=STEPS; ++i) {
             float t = static_cast<float>(i) / STEPS;
             float mt = 1.f - t;
-            float bx = (mt*mt*mt) * x    +  3*(mt*mt)*t * cx1
-                     + 3*mt * t*t * cx2  +  t*t*t * nx;
-
-            float by = (mt*mt*mt) * y    +  3*(mt*mt)*t * cy1 +
-                     + 3*mt * t*t * cy2  +  t*t*t * ny;
-
-            pass.line(ax,ay, bx,by);
+            float bx = (mt*mt*mt)*x + 3*(mt*mt)*t*cx1 + 3*mt*t*t*cx2 + t*t*t*nx;
+            float by = (mt*mt*mt)*y + 3*(mt*mt)*t*cy1 + 3*mt*t*t*cy2 + t*t*t*ny;
+            pass.line(ax,ay, bx,by, edge_color);
             ax=bx; ay=by;
         }
 
@@ -618,36 +734,14 @@ template<class Pass> struct SdfSink final : GlyphSink {
 
     // ----------- RELATIVE METHODS ------------
     inline void rmove(float dx, float dy) noexcept { move(x+dx, y+dy); }
-    inline void rline(float dx, float dy) noexcept { line(x+dx, y+dy); }
+    inline void rline(float dx, float dy) noexcept { line(x+dx, y+dy, edge_color); }
     inline void rcubic(float cx1, float cy1,
                        float cx2, float cy2,
                        float nx, float ny) noexcept {
         cubic(x+cx1, y+cy1, x+cx2, y+cy2, x+nx, y+ny);
     }
 
-}; // struct SdfSink
-
-struct SkylineNode {
-    uint16_t x;
-    uint16_t y;
-    uint16_t w;
-};
-struct Skyline {
-    SkylineNode* nodes;
-    int node_count;
-    int node_cap;
-    uint16_t width;  // atlas side
-};
-struct PlanResult {
-    bool ok;
-    uint32_t planned;
-    uint16_t atlas_side;
-    uint16_t max_points;
-    uint16_t max_w;
-    uint16_t max_h;
-    uint32_t max_area;
-};
-
+}; // struct DfSink
 
 static inline void skyline_init(Skyline& s, uint16_t width, SkylineNode* nodes, int cap) noexcept {
     s.nodes = nodes;
@@ -668,7 +762,6 @@ static inline void skyline_merge(Skyline& s) noexcept {
         }
     }
 }
-
 // returns y if fits, else 0xFFFF
 static inline uint16_t skyline_fit(const Skyline& s, int idx, uint16_t rw, uint16_t rh) noexcept {
     uint16_t x = s.nodes[idx].x;
@@ -688,7 +781,6 @@ static inline uint16_t skyline_fit(const Skyline& s, int idx, uint16_t rw, uint1
     }
     return y;
 }
-
 static inline bool skyline_insert(Skyline& s, uint16_t rw, uint16_t rh, uint16_t& out_x, uint16_t& out_y) noexcept {
     int best_idx = -1;
     uint16_t best_y = 0xFFFF;
@@ -751,7 +843,6 @@ static inline bool skyline_insert(Skyline& s, uint16_t rw, uint16_t rh, uint16_t
     return true;
 }
 
-
 struct Font {
     explicit Font() noexcept = default;
     ~Font() noexcept = default;
@@ -761,28 +852,29 @@ struct Font {
     inline int FindGlyphIndex(int unicode_codepoint) const noexcept;
     inline GlyphHorMetrics GetGlyphHorMetrics(int glyph_index) const noexcept;
 
-    // 1 glyph, independent: unrelated to passes, streams glyph
-    inline bool StreamSDF(const GlyphPlan& gp,
-                          unsigned char* atlas,
-                          uint32_t atlas_width_px, // atlas stride
-                          float scale,          // pixels per font unit
-                          float spread,         // font units
-                          GlyphScratch& scratch,
-                          uint16_t max_points,  // from plan
-                          uint32_t max_area,    // from plan
-                          uint16_t max_xs       // from plan
-                         ) noexcept;
+    // INIT
+    inline size_t PlanBytes(const PlanInput& in) const noexcept;
 
     // PASS 1
-    inline PlanResult PlanSDF(FontPlan& plan,
-                              const uint32_t* codepoints, uint32_t count,
-                              GlyphPlan* glyphs,          uint32_t glyph_cap,
-                              SkylineNode* skyline_nodes, int skyline_node_cap,
-                              uint16_t max_xs) noexcept;
+    inline bool Plan(const PlanInput& in,
+                     void* plan_mem, size_t plan_bytes,
+                     FontPlan& out_plan) noexcept;
     // PASS 2
-    inline bool BuildSDF(const FontPlan& plan,
-                         uint8_t* atlas,    uint32_t atlas_stride,
-                         void* scratch_mem, size_t scratch_bytes) noexcept;
+    inline bool Build(const FontPlan& plan,
+                      uint8_t* atlas,
+                      uint32_t atlas_stride_bytes) noexcept;
+
+    // 1 glyph, independent: unrelated to passes, streams glyph
+    inline bool StreamDF(const GlyphPlan& gp,
+        unsigned char* atlas,
+        uint32_t atlas_stride_bytes, // atlas stride
+        DfMode mode,          // SDF or MSDF
+        float scale,          // pixels per font unit
+        float spread,         // font units
+        GlyphScratch& scratch,
+        uint16_t max_points,  // from plan
+        uint32_t max_area     // from plan
+    ) noexcept;
 
     
     // public helper (tiny, no skyline, no passes)
@@ -858,60 +950,75 @@ private:
 //                         PUBLIC   METHODS
 // ============================================================================
 
-inline bool Font::StreamSDF(const GlyphPlan& gp,
-                            unsigned char* atlas,
-                            uint32_t atlas_width_px,
+inline bool Font::StreamDF(const GlyphPlan& gp,
+                            unsigned char* atlas, uint32_t atlas_stride_bytes,
+                            DfMode mode,
                             float scale,          // pixels per font unit
                             float spread,         // font units
                             GlyphScratch& scratch,
-                            uint16_t max_points,
-                            uint32_t max_area,
-                            uint16_t max_xs) noexcept {
-    STBTT_assert(atlas);
+                            uint16_t max_points, uint32_t max_area) noexcept {
     if (!atlas) return false;
-
-    STBTT_assert(gp.rect.w != 0 && gp.rect.h != 0);
     if (gp.rect.w == 0 || gp.rect.h == 0) return false;
 
     const int w = (int)gp.rect.w;
     const int h = (int)gp.rect.h;
     const uint32_t area = (uint32_t)w * (uint32_t)h;
-
-    STBTT_assert(area <= (uint32_t)max_area);
     if (area > (uint32_t)max_area) return false;
 
-    STBTT_assert(max_xs != 0);
-    if (max_xs == 0) return false;
-
-    SdfGridFast gg{};
-    gg.out = atlas;
-    gg.out_stride = atlas_width_px;
+    DfGridFast gg{};
+    gg.out = (uint8_t*)atlas;
+    gg.out_comp = (mode == DfMode::MSDF) ? 3 : 1;
+    gg.out_stride = atlas_stride_bytes;
     gg.shift_x = (int)gp.rect.x;
     gg.shift_y = (int)gp.rect.y;
+
     gg.w = w;
     gg.h = h;
+
     gg.scale = scale;
     gg.inv_scale = scale>0.f ? 1.f/scale : 0.f;
     gg.spread = spread;
+
     // rect origin in font space: bbox expanded by spread on both sides
     gg.origin_x = (float)gp.x_min - spread;
     gg.origin_y = (float)gp.y_min - spread;
 
-    gg.min_d2 = scratch.min_d2;
     gg.inside = scratch.inside;
 
-    // 1) distance pass (bbox)
-    {
+    // --------- bind distance buffers ----------
+    if (mode == DfMode::MSDF) {
+        gg.d2 = nullptr;
+        gg.d2r = scratch_d2_r(scratch);
+        gg.d2g = scratch_d2_g(scratch, max_area);
+        gg.d2b = scratch_d2_b(scratch, max_area);
+    }
+    else {
+        gg.d2 = scratch.min_d2;
+        gg.d2r = gg.d2g = gg.d2b = nullptr;
+    }
+
+    // =====================================================================
+    // 1) distance pass
+    // =====================================================================
+    if (mode == DfMode::MSDF) {
+        MsfDistanceBBoxPass pass(gg);
+        DfSink<MsfDistanceBBoxPass> sink(pass);
+        if (!RunGlyfStream(gp.glyph_index, sink, spread, scratch, max_points))
+            return false;
+    }
+    else {
         SdfDistanceBBoxPass pass(gg);
-        SdfSink<SdfDistanceBBoxPass> sink(pass);
+        DfSink<SdfDistanceBBoxPass> sink(pass);
         if (!RunGlyfStream(gp.glyph_index, sink, spread, scratch, max_points))
             return false;
     }
 
-    // 2) sign pass (scanline parity) - baseline (h times)
+    // =====================================================================
+   // 2) sign pass (same for both)
+   // =====================================================================
     {
-        SdfSignScanlinePass pass(gg, scratch.xs, (int)max_xs);
-        SdfSink<SdfSignScanlinePass> sink(pass);
+        DfSignScanlinePass pass(gg, scratch.xs);
+        DfSink<DfSignScanlinePass> sink(pass);
 
         for (int y=0; y<h; ++y) {
             pass.begin_row(y);
@@ -921,202 +1028,342 @@ inline bool Font::StreamSDF(const GlyphPlan& gp,
         }
     }
 
-    // 3) finalize to atlas (no padding)
-    const float inv_max_d = spread>0.f ? 1.f/spread : 0.f;
+    // 3) finalize to atlas
+    if (mode == DfMode::MSDF) {
+        for (int y=0; y<h; ++y) {
+            uint8_t* row = gg.out + (uint32_t)(gg.shift_y + y) * gg.out_stride
+                         + (uint32_t)gg.shift_x * 3u;
 
-    for (int y=0; y<h; ++y) {
-        uint8_t* dst = gg.out + (gg.shift_y + y) * gg.out_stride + gg.shift_x;
-        for (int x=0; x<w; ++x) {
-            const int idx = y*w + x;
-    
-            float nd2 = (float)gg.min_d2[idx] * (1.f / 65535.f); // normalized d^2
-            float nd  = sqrt(nd2);                               // normalized d
-            if (nd > 1.f) nd = 1.f;
-    
-            int sd = (int)(nd * 127.f + 0.5f);
-            if (gg.inside[idx]) sd = -sd;
-    
-            dst[x] = (uint8_t)(128 + sd);
+            for (int x=0; x<w; ++x) {
+                const int idx = y*w + x;
+
+                const float nr = sqrt((float)gg.d2r[idx] * (1.f / 65535.f));
+                const float ng = sqrt((float)gg.d2g[idx] * (1.f / 65535.f));
+                const float nb = sqrt((float)gg.d2b[idx] * (1.f / 65535.f));
+
+                int sr = (int)(nr * 127.f + .5f);
+                int sg = (int)(ng * 127.f + .5f);
+                int sb = (int)(nb * 127.f + .5f);
+
+                if (gg.inside[idx]) {
+                    sr = -sr;
+                    sg = -sg;
+                    sb = -sb;
+                }
+
+                uint8_t* p = row + (uint32_t)x * 3u;
+                p[0] = (uint8_t)(128 + sr);
+                p[1] = (uint8_t)(128 + sg);
+                p[2] = (uint8_t)(128 + sb);
+            }
+        }
+    } else {
+        for (int y=0; y<h; ++y) {
+            uint8_t* row = gg.out + (uint32_t)(gg.shift_y + y) * gg.out_stride
+                         + (uint32_t)gg.shift_x;
+
+            for (int x=0; x<w; ++x) {
+                const int idx = y*w + x;
+
+                float nd = sqrt((float)gg.d2[idx] * (1.f / 65535.f));
+                if (nd > 1.f) nd = 1.f;
+
+                int sd = (int)(nd * 127.f + 0.5f);
+                if (gg.inside[idx]) sd = -sd;
+
+                row[x] = (uint8_t)(128 + sd);
+            }
         }
     }
-
-
     return true;
 }
 
-inline PlanResult Font::PlanSDF(FontPlan& plan,
-                                const uint32_t* codepoints,
-                                uint32_t codepoint_count,
-                                GlyphPlan* out_glyphs,
-                                uint32_t out_cap,
-                                SkylineNode* skyline_nodes,
-                                int skyline_node_cap,
-                                uint16_t max_xs) noexcept {
-    PlanResult r{};
-    r.ok = false;
+inline size_t Font::PlanBytes(const PlanInput& in) const noexcept {
+    if (!in.codepoints || in.codepoint_count == 0) return 0;
 
-    plan.glyphs = out_glyphs;
-    plan.glyph_count = 0;
-    plan.max_points = 0;
-    plan.max_xs = max_xs;
-    plan.atlas_side = 0;
+    // compute scale/spread in font units
+    const float scale = ScaleForPixelHeight((float)in.pixel_height);
+    const float spread_fu = (scale > 0.f) ? (in.spread_px / scale) : 0.f;
 
-    uint32_t total_area = 0;
+    uint32_t glyph_count = 0;
+    uint16_t max_points = 0;
     uint32_t max_area = 0;
-    uint16_t max_w = 0, max_h = 0;
 
-    // 1) fill glyph list
-    for (uint32_t i = 0; i < codepoint_count; ++i) {
-        if (plan.glyph_count >= out_cap) break;
-
-        uint32_t cp = codepoints[i];
-        int gi = FindGlyphIndex((int)cp);
-        if (gi <= 0) continue; // skip missing (and typically .notdef)
+    for (uint32_t i = 0; i < in.codepoint_count; ++i) {
+        const uint32_t cp = in.codepoints[i];
+        const int gi = FindGlyphIndex((int)cp);
+        if (gi <= 0) continue;
 
         GlyphPlanInfo gpi{};
-        if (!parse_glyph_plan_info_(_data, _loca, _glyf, _index_to_loc_format,
-                                    _num_glyphs, gi, gpi))
-            continue;
+        if (!GetGlyphPlanInfo(gi, gpi)) continue;
         if (gpi.is_empty) continue;
 
-        GlyphPlan& gp = out_glyphs[plan.glyph_count++];
+        // bbox+spread -> pixel rect
+        const float span_x = (float)(gpi.x_max - gpi.x_min) + 2.f * spread_fu;
+        const float span_y = (float)(gpi.y_max - gpi.y_min) + 2.f * spread_fu;
+
+        const uint16_t rw = ceil_to_u16(span_x * scale);
+        const uint16_t rh = ceil_to_u16(span_y * scale);
+
+        const uint32_t area = (uint32_t)rw * (uint32_t)rh;
+        if (area > max_area) max_area = area;
+
+        if (gpi.max_points_in_tree > max_points) max_points = gpi.max_points_in_tree;
+
+        ++glyph_count;
+    }
+
+    if (!glyph_count) return 0;
+
+    // skyline needs ~2*N+16 nodes
+    const uint32_t node_cap = 2u * glyph_count + 16u;
+
+    // final bytes for one plan block
+    return plan_block_bytes(glyph_count, node_cap, max_points, max_area, in.mode);
+}
+
+inline bool Font::Plan(const PlanInput& in,
+                       void* plan_mem, size_t plan_bytes,
+                       FontPlan& out_plan) noexcept {
+    if (!plan_mem || plan_bytes == 0) return false;
+    if (!in.codepoints || in.codepoint_count == 0) return false;
+
+    // compute scale/spread in font units
+    const float scale = ScaleForPixelHeight((float)in.pixel_height);
+    if (scale <= 0.f) return false;
+
+    const float spread_fu = in.spread_px / scale;
+
+    // --------- First: count again (must match plan_bytes logic) ----------
+    uint32_t glyph_count = 0;
+    uint16_t max_points = 0;
+    uint32_t max_area = 0;
+    uint32_t total_area = 0;
+    uint16_t max_w = 0, max_h = 0;
+
+    for (uint32_t i = 0; i < in.codepoint_count; ++i) {
+        const int gi = FindGlyphIndex((int)in.codepoints[i]);
+        if (gi <= 0) continue;
+
+        GlyphPlanInfo gpi{};
+        if (!GetGlyphPlanInfo(gi, gpi)) continue;
+        if (gpi.is_empty) continue;
+
+        const float span_x = (float)(gpi.x_max - gpi.x_min) + 2.f * spread_fu;
+        const float span_y = (float)(gpi.y_max - gpi.y_min) + 2.f * spread_fu;
+
+        const uint16_t rw = ceil_to_u16(span_x * scale);
+        const uint16_t rh = ceil_to_u16(span_y * scale);
+
+        const uint32_t area = (uint32_t)rw * (uint32_t)rh;
+        total_area += area;
+        if (area > max_area) max_area = area;
+
+        if (rw > max_w) max_w = rw;
+        if (rh > max_h) max_h = rh;
+
+        if (gpi.max_points_in_tree > max_points) max_points = gpi.max_points_in_tree;
+
+        ++glyph_count;
+    }
+
+    if (!glyph_count) return false;
+
+    const uint32_t node_cap = 2u * glyph_count + 16u;
+
+    // verify plan_bytes big enough
+    const size_t need_bytes = plan_block_bytes(glyph_count, node_cap, max_points, max_area, in.mode);
+    if (plan_bytes < need_bytes) return false;
+
+    // --------- Bind plan block ----------
+    MemArena a{};
+    a.init(plan_mem, plan_bytes);
+
+    GlyphPlan* glyphs = (GlyphPlan*)a.take((size_t)glyph_count * sizeof(GlyphPlan), 16);
+    SkylineNode* nodes = (SkylineNode*)a.take((size_t)node_cap * sizeof(SkylineNode), 16);
+
+    const size_t scratch_bytes = glyph_scratch_bytes(max_points, max_area, in.mode);
+    void* scratch_mem = a.take(scratch_bytes, 16);
+
+    if (!glyphs || !nodes || !scratch_mem) return false;
+
+    // --------- Fill glyph array (second pass) ----------
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < in.codepoint_count; ++i) {
+        const uint32_t cp = in.codepoints[i];
+        const int gi = FindGlyphIndex((int)cp);
+        if (gi <= 0) continue;
+
+        GlyphPlanInfo gpi{};
+        if (!GetGlyphPlanInfo(gi, gpi)) continue;
+        if (gpi.is_empty) continue;
+
+        GlyphPlan& gp = glyphs[at++];
         gp.codepoint = cp;
         gp.glyph_index = (uint16_t)gi;
         gp.x_min = gpi.x_min;
         gp.y_min = gpi.y_min;
         gp.x_max = gpi.x_max;
         gp.y_max = gpi.y_max;
-        gp.num_points = gpi.max_points_in_tree; // max points among subglyphs; safe for scratch
+        gp.num_points = gpi.max_points_in_tree;
 
-        // rect size in pixels (bbox + 2*spread)
-        float span_x = (float)(gp.x_max-gp.x_min) + 2.0f * plan.spread;
-        float span_y = (float)(gp.y_max-gp.y_min) + 2.0f * plan.spread;
+        const float span_x = (float)(gp.x_max - gp.x_min) + 2.f * spread_fu;
+        const float span_y = (float)(gp.y_max - gp.y_min) + 2.f * spread_fu;
 
-        uint16_t rw = ceil_to_u16(span_x * plan.scale);
-        uint16_t rh = ceil_to_u16(span_y * plan.scale);
-
-        gp.rect.w = rw;
-        gp.rect.h = rh;
+        gp.rect.w = ceil_to_u16(span_x * scale);
+        gp.rect.h = ceil_to_u16(span_y * scale);
         gp.rect.x = 0;
         gp.rect.y = 0;
-
-        plan.max_points = u16_max(plan.max_points, gp.num_points);
-
-        uint32_t a = (uint32_t)rw * (uint32_t)rh;
-        total_area += a;
-        if (a > max_area) max_area = a;
-        max_w = u16_max(max_w, rw);
-        max_h = u16_max(max_h, rh);
     }
 
-    if (plan.glyph_count == 0) return r;
+    // defensive: should match glyph_count
+    if (at != glyph_count) return false;
 
-    // ensure skyline node cap is ok (rough safe bound)
-    // skyline tends to need <= 2*N + 1 nodes; add headroom
-    if (skyline_node_cap < (int)(2 * plan.glyph_count + 16)) return r;
-
-    // 2) choose atlas side and pack; try side *=2 until success
+    // --------- Choose atlas side and skyline-pack ----------
     uint16_t side = next_pow2_u16(ceil_sqrt_u32(total_area));
     if (side < max_w) side = next_pow2_u16(max_w);
     if (side < max_h) side = next_pow2_u16(max_h);
     if (side < 64) side = 64;
 
-    for (int attempt = 0; attempt < 20; ++attempt) {
-        Skyline sk;
-        skyline_init(sk, side, skyline_nodes, skyline_node_cap);
+    bool packed = false;
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        Skyline sk{};
+        skyline_init(sk, side, nodes, (int)node_cap);
 
         bool ok = true;
-        for (uint32_t i = 0; i < plan.glyph_count; ++i) {
-            GlyphPlan& gp = plan.glyphs[i];
+        for (uint32_t i = 0; i < glyph_count; ++i) {
             uint16_t x, y;
-            if (!skyline_insert(sk, gp.rect.w, gp.rect.h, x, y)) { ok = false; break; }
-            gp.rect.x = x;
-            gp.rect.y = y;
+            if (!skyline_insert(sk, glyphs[i].rect.w, glyphs[i].rect.h, x, y)) {
+                ok = false;
+                break;
+            }
+            glyphs[i].rect.x = x;
+            glyphs[i].rect.y = y;
         }
 
-        if (ok) {
-            plan.atlas_side = side;
-            plan.max_area = max_area;
-            plan.max_xs = max_xs;
-
-            r.ok = true;
-            r.planned = plan.glyph_count;
-            r.atlas_side = side;
-            r.max_points = plan.max_points;
-            r.max_area = max_area;
-            r.max_w = max_w;
-            r.max_h = max_h;
-            return r;
-        }
-
+        if (ok) { packed = true; break; }
         if (side >= 32768) break;
         side = (uint16_t)(side * 2);
     }
+    if (!packed) return false;
 
-    return r;
-}
+    // --------- Fill out_plan ----------
+    out_plan.mode = in.mode;
+    out_plan.pixel_height = in.pixel_height;
+    out_plan.scale = scale;
+    out_plan.spread_fu = spread_fu;
 
+    out_plan.atlas_side = side;
+    out_plan.glyph_count = glyph_count;
+    out_plan.max_points = max_points;
+    out_plan.max_area = max_area;
 
+    out_plan._mem = plan_mem;
+    out_plan._mem_bytes = plan_bytes;
 
-inline bool Font::BuildSDF(const FontPlan& plan,
-                           uint8_t* atlas,
-                           uint32_t atlas_stride,
-                           void* scratch_mem,
-                           size_t scratch_bytes) noexcept {
-    // verify scratch size
-    if (!atlas || !scratch_mem) return false;
-    if (atlas_stride < plan.atlas_side) return false;
+    out_plan._glyphs = glyphs;
+    out_plan._nodes = nodes;
+    out_plan._node_cap = node_cap;
 
-    const size_t need = glyph_scratch_bytes(plan.max_points, plan.max_area, plan.max_xs, plan.mode);
-    if (scratch_bytes < need) return false;
+    out_plan._scratch_mem = scratch_mem;
+    out_plan._scratch_bytes = scratch_bytes;
 
-    GlyphScratch scratch = bind_glyph_scratch(scratch_mem, plan.max_points, plan.max_area, plan.max_xs, plan.mode);
-
-    for (uint32_t i = 0; i < plan.glyph_count; ++i) {
-        const GlyphPlan& gp = plan.glyphs[i];
-
-        if ((uint32_t)gp.rect.x + gp.rect.w > plan.atlas_side) return false;
-        if ((uint32_t)gp.rect.y + gp.rect.h > plan.atlas_side) return false;
-
-        if (!StreamSDF(gp, atlas, atlas_stride,
-                       plan.scale, plan.spread,
-                       scratch,
-                       plan.max_points, plan.max_area, plan.max_xs))
-            return false;
-    }
     return true;
 }
 
 
 
+inline bool Font::Build(const FontPlan& plan,
+                        uint8_t* atlas,
+                        uint32_t atlas_stride_bytes) noexcept {
+    if (!atlas) return false;
+    if (!plan._glyphs || !plan._scratch_mem) return false;
+    if (!plan.atlas_side || !plan.glyph_count) return false;
+
+    const uint32_t comp = (plan.mode == DfMode::MSDF) ? 3u : 1u;
+    if (atlas_stride_bytes < (uint32_t)plan.atlas_side * comp) return false;
+
+    // bind scratch views (also sets visit_n=0, etc.)
+    GlyphScratch scratch = bind_glyph_scratch(plan._scratch_mem,
+        plan.max_points,
+        plan.max_area,
+        plan.mode);
+
+    for (uint32_t i = 0; i < plan.glyph_count; ++i) {
+        const GlyphPlan& gp = plan._glyphs[i];
+
+        // bounds check (atlas is square side x side)
+        if ((uint32_t)gp.rect.x + gp.rect.w > plan.atlas_side) return false;
+        if ((uint32_t)gp.rect.y + gp.rect.h > plan.atlas_side) return false;
+
+        // IMPORTANT: reset recursion guard per glyph
+        scratch.visit_n = 0;
+
+        if (!StreamDF(gp,
+            (unsigned char*)atlas,
+            atlas_stride_bytes,   // NOTE: stride is BYTES, not width in pixels
+            plan.mode,
+            plan.scale,
+            plan.spread_fu,
+            scratch,
+            plan.max_points,
+            plan.max_area))
+            return false;
+    }
+    return true;
+}
+
 // ============================================================================
 //                         PRIVATE   METHODS
 // ============================================================================
 
+static inline bool glyf_visit_push(GlyphScratch& scratch, uint16_t g) noexcept {
+    for (uint16_t i = 0; i < scratch.visit_n; ++i) if (scratch.visit[i] == g) return false; // cycle
+    if (scratch.visit_n >= GlyphScratch::VISIT_CAP) return false;
+    scratch.visit[scratch.visit_n++] = g;
+    return true;
+};
+static inline void glyf_visit_pop(GlyphScratch& scratch) noexcept {
+    if (scratch.visit_n) --scratch.visit_n;
+};
 
-// TODO recursive composite glyphs
+struct VisitGuard {
+    GlyphScratch& s;
+    bool pushed;
+    VisitGuard(GlyphScratch& ss, uint16_t g) noexcept : s(ss), pushed(false) {
+        pushed = glyf_visit_push(s, g);
+    }
+    ~VisitGuard() noexcept {
+        if (pushed) glyf_visit_pop(s);
+    }
+    inline bool ok() const noexcept { return pushed; }
+};
+
 bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
                          GlyphScratch& scratch, uint16_t max_points) noexcept {
+    bool ok = false;
+
     if (!_glyf || !_loca) return false;
     if ((unsigned)glyph_index >= (unsigned)_num_glyphs) return false;
 
+    VisitGuard root(scratch, (uint16_t)glyph_index);
+    if (!root.ok()) return false;
+
     auto glyph_offset = [&](int g) -> uint32_t {
-        return _index_to_loc_format==0 ?
-              _glyf + 2*ushort_(_data + _loca+2 * g)
-            : _glyf +    ulong_(_data + _loca+4 * g);
+        return _index_to_loc_format == 0 ?
+              _glyf + 2u * (uint32_t)ushort_(_data + _loca + 2*g)
+            : _glyf +      (uint32_t) ulong_(_data + _loca + 4*g);
     };
 
-    uint32_t g0 = glyph_offset(glyph_index);
-    uint32_t g1 = glyph_offset(glyph_index + 1);
+    const uint32_t g0 = glyph_offset(glyph_index);
+    const uint32_t g1 = glyph_offset(glyph_index + 1);
     if (g0 == g1) return false; // empty glyph
 
     const uint8_t* g = _data + g0;
-
-    int16_t num_contours = short_(g);
+    const int16_t num_contours = short_(g);
     g += 10;
 
     sink.begin();
-
     // ------------------------------------------------------------
     // SIMPLE GLYPH
     // ------------------------------------------------------------
@@ -1190,6 +1437,8 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
         for (int c = 0; c < ncontours; ++c) {
             const uint16_t end = ushort_(end_pts + 2 * c);
 
+            sink.set_edge_color(c % 3);
+
             auto idx_prev = [&](uint16_t i) noexcept -> uint16_t { return i==start ? end : (uint16_t)(i-1); };
             auto idx_next = [&](uint16_t i) noexcept -> uint16_t { return i==end ? start : (uint16_t)(i+1); };
             auto on = [&](uint16_t i) noexcept -> bool { return is_on_u8_(flags[i]); };
@@ -1249,9 +1498,6 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
             start = (uint16_t)(end+1);
         }
     }
-
-
-
     // ------------------------------------------------------------
     // COMPOSITE GLYPH
     // ------------------------------------------------------------
@@ -1260,38 +1506,31 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
         uint16_t flags;
 
         do {
-            flags        = ushort_(p); p+=2;
+                   flags = ushort_(p); p+=2;
             uint16_t sub = ushort_(p); p+=2;
 
-            float a=1.f, b=0.f, c=0.f, d=1.f, e=0.f, f=0.f;
+            // ---- parse args correctly (MUST advance p always) ----
+            // TrueType flags:
+            // 0x0001 ARGS_ARE_WORDS
+            // 0x0002 ARGS_ARE_XY_VALUES
+            // 0x0020 MORE_COMPONENTS
+            // 0x0100 WE_HAVE_INSTRUCTIONS
+            // 0x0008 WE_HAVE_A_SCALE
+            // 0x0040 WE_HAVE_AN_X_AND_Y_SCALE
+            // 0x0080 WE_HAVE_A_TWO_BY_TWO
 
-            if (flags & 2) {
-                if (flags & 1) {
-                    e = short_(p); f = short_(p+2);
-                    p += 4;
-                }
-                else {
-                    e = static_cast<int8_t>(*p++);
-                    f = static_cast<int8_t>(*p++);
-                }
-            }
+            // args
+            int16_t arg1=0, arg2=0;
+            if (flags & 0x0001) { arg1 = short_(p); arg2 = short_(p+2); p += 4; }
+            else { arg1 = (int8_t)p[0]; arg2 = (int8_t)p[1]; p += 2; }
 
-            if (flags & 8) {
-                a = d = short_(p) / 16384.f;
-                p += 2;
-            }
-            else if (flags & 64) {
-                a = short_(p+0) / 16384.f;
-                d = short_(p+2) / 16384.f;
-                p += 4;
-            }
-            else if (flags & 128) {
-                a = short_(p+0) / 16384.f;
-                b = short_(p+2) / 16384.f;
-                c = short_(p+4) / 16384.f;
-                d = short_(p+6) / 16384.f;
-                p += 8;
-            }
+            float e=0.f, f=0.f;
+            if (flags & 0x0002) { e = (float)arg1; f = (float)arg2; }
+
+            float a=1.f,b=0.f,c=0.f,d=1.f;
+            if (flags & 0x0008) { a = d = short_(p)/16384.f; p += 2; }
+            else if (flags & 0x0040) { a = short_(p)/16384.f; d = short_(p+2)/16384.f; p += 4; }
+            else if (flags & 0x0080) { a = short_(p)/16384.f; b = short_(p+2)/16384.f; c = short_(p+4)/16384.f; d = short_(p+6)/16384.f; p += 8; }
 
             struct XformSink final : GlyphSink {
                 GlyphSink& out;
@@ -1348,11 +1587,15 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
             if (!RunGlyfStream(sub, xs, spread, scratch, max_points))
                 return false;
 
-        } while (flags & 32);
+        } while (flags & 0x0020); // MORE_COMPONENTS
+        // skip instructions if present
+        if (flags & 0x0100) { // WE_HAVE_INSTRUCTIONS
+            const uint16_t ilen = ushort_(p); p += 2;
+            p += ilen;
+        }
     }
-
     return true;
-}
+} // RunGlyfStream
 
 
 inline int Font::GetGlyfOffset(int glyph_index) const noexcept {

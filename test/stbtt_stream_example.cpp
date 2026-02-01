@@ -5,20 +5,15 @@
 #include "../stb_truetype_stream/stb_truetype_stream.hpp"
 
 extern "C" static inline int __cdecl _purecall(void) { ExitProcess(0xDEAD); }
-// x86 floating-point helper symbol (needed if you use float/double on x86)
 extern "C" int _fltused = 0;
 
-// ---- C intrinsics replacements (provide both names for x86) ----
 extern "C" void* __cdecl memset(void* dst, int c, size_t n) {
     unsigned char* p = (unsigned char*)dst;
     while (n--) *p++ = (unsigned char)c;
     return dst;
 }
-extern "C" void* __cdecl _memset(void* dst, int c, size_t n) { // x86 name
-    return memset(dst, c, n);
-}
+extern "C" void* __cdecl _memset(void* dst, int c, size_t n) { return memset(dst, c, n); }
 
-// ---- minimal global new/delete ----
 void* __cdecl operator new(size_t sz) {
     if (!sz) sz = 1;
     void* p = VirtualAlloc(nullptr, sz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -26,24 +21,24 @@ void* __cdecl operator new(size_t sz) {
     return p;
 }
 void* __cdecl operator new[](size_t sz) { return operator new(sz); }
-
-void __cdecl operator delete(void* p) noexcept {
-    if (p) VirtualFree(p, 0, MEM_RELEASE);
-}
+void __cdecl operator delete(void* p) noexcept { if (p) VirtualFree(p, 0, MEM_RELEASE); }
 void __cdecl operator delete[](void* p) noexcept { operator delete(p); }
 void __cdecl operator delete(void* p, unsigned int) noexcept { operator delete(p); }
 void __cdecl operator delete[](void* p, unsigned int) noexcept { operator delete(p); }
 
-
 // --- config ---
 using u8 = unsigned char;
-constexpr int width = 64;
-constexpr int height = 64;
+constexpr int width = 128;
+constexpr int height = 128;
 constexpr const char* font_ttf = "C:\\Windows\\Fonts\\arialbd.ttf";
 
-// --- globals ---
-static u8 pixels[width * height];
 static stbtt_stream::Font g_font;
+
+static u8* pixels_sdf;   // 1 byte/px
+static u8* pixels_msdf;  // 4 bytes/px (BGRA for DIB32)
+
+static HWND g_hwnd_sdf = nullptr;
+static HWND g_hwnd_msdf = nullptr;
 
 static void fail() { ExitProcess(1337); }
 
@@ -59,56 +54,83 @@ static uint8_t* load_font(const char* path, size_t* out_size) {
     return data;
 }
 
-static void render_codepoint(int codepoint) {
-    const int glyph = g_font.FindGlyphIndex(codepoint);
-    if (glyph <= 0) return;
+static void render_codepoint_mode(int codepoint,
+    stbtt_stream::DfMode mode,
+    u8* out_pixels,
+    uint32_t out_stride_bytes) {
+    uint32_t cps[1] = { (uint32_t)codepoint };
 
-    stbtt_stream::GlyphPlanInfo gpi{};
-    if (!g_font.GetGlyphPlanInfo(glyph, gpi) || gpi.is_empty) return;
+    stbtt_stream::PlanInput in{};
+    in.mode = mode;
+    in.pixel_height = (uint16_t)height;
+    in.spread_px = 6.0f;
+    in.codepoints = cps;
+    in.codepoint_count = 1;
 
-    // fixed output bitmap (NOT an atlas, just a 1-cell image)
-    stbtt_stream::GlyphPlan gp{};
-    gp.codepoint = (uint32_t)codepoint;
-    gp.glyph_index = (uint16_t)glyph;
-    gp.x_min = gpi.x_min; gp.y_min = gpi.y_min;
-    gp.x_max = gpi.x_max; gp.y_max = gpi.y_max;
-    gp.num_points = gpi.max_points_in_tree;
+    const size_t plan_bytes = g_font.PlanBytes(in);
+    if (!plan_bytes) return;
 
-    gp.rect.x = 0; gp.rect.y = 0;
-    gp.rect.w = (uint16_t)width;
-    gp.rect.h = (uint16_t)height;
+    void* plan_mem = VirtualAlloc(nullptr, plan_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!plan_mem) fail();
 
-    const float scale = g_font.ScaleForPixelHeight((float)height);
-    const float spread_px = 8.0f;
-    const float spread_fu = spread_px / scale; // spread in font units
+    stbtt_stream::FontPlan plan{};
+    if (!g_font.Plan(in, plan_mem, plan_bytes, plan)) {
+        VirtualFree(plan_mem, 0, MEM_RELEASE);
+        return;
+    }
 
-    const uint16_t max_points = gp.num_points;
-    const uint32_t max_area = (uint32_t)width * (uint32_t)height;
-    const uint16_t max_xs = 256;
+    if (plan.atlas_side > (uint16_t)width || plan.atlas_side > (uint16_t)height) {
+        VirtualFree(plan_mem, 0, MEM_RELEASE);
+        return;
+    }
 
-    const size_t scratch_bytes = stbtt_stream::glyph_scratch_bytes(
-        max_points, max_area, max_xs, stbtt_stream::DfMode::SDF);
+    // clear output buffer
+    const uint32_t comp = (mode == stbtt_stream::DfMode::MSDF) ? 4u : 1u; // for our output (BGRA or Gray)
+    memset(out_pixels, 0, (size_t)width * (size_t)height * comp);
 
-    void* scratch_mem = VirtualAlloc(nullptr, scratch_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!scratch_mem) fail();
+    // Build writes:
+    // - SDF: 1 byte/px
+    // - MSDF: 3 bytes/px (RGB)
+    //
+    // Our MSDF buffer is BGRA (4 bytes/px), so we build into a temp RGB buffer,
+    // then expand to BGRA for display.
+    if (mode == stbtt_stream::DfMode::SDF) {
+        if (!g_font.Build(plan, out_pixels, out_stride_bytes)) {
+            // optional debug
+        }
+    }
+    else {
+        // temp RGB buffer (width*height*3)
+        u8* tmp_rgb = (u8*)VirtualAlloc(nullptr, (size_t)width * (size_t)height * 3u,
+            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!tmp_rgb) { VirtualFree(plan_mem, 0, MEM_RELEASE); return; }
+        memset(tmp_rgb, 0, (size_t)width * (size_t)height * 3u);
 
-    stbtt_stream::GlyphScratch scratch = stbtt_stream::bind_glyph_scratch(
-        scratch_mem, max_points, max_area, max_xs, stbtt_stream::DfMode::SDF);
+        const uint32_t tmp_stride = (uint32_t)width * 3u;
+        if (g_font.Build(plan, tmp_rgb, tmp_stride)) {
+            // RGB -> BGRA
+            for (int y = 0; y < height; ++y) {
+                const u8* src = tmp_rgb + (size_t)y * (size_t)width * 3u;
+                u8* dst = out_pixels + (size_t)y * (size_t)width * 4u;
+                for (int x = 0; x < width; ++x) {
+                    const u8 r = src[x * 3 + 0];
+                    const u8 g = src[x * 3 + 1];
+                    const u8 b = src[x * 3 + 2];
+                    dst[x * 4 + 0] = b;
+                    dst[x * 4 + 1] = g;
+                    dst[x * 4 + 2] = r;
+                    dst[x * 4 + 3] = 255;
+                }
+            }
+        }
 
-    memset(pixels, 0, sizeof(pixels));
+        VirtualFree(tmp_rgb, 0, MEM_RELEASE);
+    }
 
-    // 1 glyph streaming
-    g_font.StreamSDF(gp,
-        pixels, (uint32_t)width,
-        scale, spread_fu,
-        scratch,
-        max_points, max_area, max_xs
-    );
-
-    VirtualFree(scratch_mem, 0, MEM_RELEASE);
+    VirtualFree(plan_mem, 0, MEM_RELEASE);
 }
 
-static void paint(HDC dc) {
+static void paint_sdf(HDC dc) {
     RECT r{};
     GetClientRect(WindowFromDC(dc), &r);
     FillRect(dc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
@@ -119,7 +141,7 @@ static void paint(HDC dc) {
     );
     if (!bmi) return;
 
-    // no CRT: manual zero
+    // zero
     for (size_t i = 0; i < sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD); ++i)
         ((u8*)bmi)[i] = 0;
 
@@ -131,53 +153,125 @@ static void paint(HDC dc) {
     bmi->bmiHeader.biCompression = BI_RGB;
     bmi->bmiHeader.biClrUsed = 256;
 
-    for (int i = 0; i < 256; i++)
-        bmi->bmiColors[i].rgbRed =
-        bmi->bmiColors[i].rgbGreen =
+    for (int i = 0; i < 256; i++) {
+        bmi->bmiColors[i].rgbRed = (BYTE)i;
+        bmi->bmiColors[i].rgbGreen = (BYTE)i;
         bmi->bmiColors[i].rgbBlue = (BYTE)i;
+    }
 
     StretchDIBits(dc, 0, 0, width, height, 0, 0, width, height,
-        pixels, bmi, DIB_RGB_COLORS, SRCCOPY);
+        pixels_sdf, bmi, DIB_RGB_COLORS, SRCCOPY);
 
     VirtualFree(bmi, 0, MEM_RELEASE);
 }
 
-LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+static void paint_msdf(HDC dc) {
+    RECT r{};
+    GetClientRect(WindowFromDC(dc), &r);
+    FillRect(dc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
+
+    BITMAPINFO bmi{};
+    // manual zero (no CRT)
+    u8* z = (u8*)&bmi;
+    for (size_t i = 0; i < sizeof(bmi); ++i) z[i] = 0;
+
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;          // BGRA
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    StretchDIBits(dc, 0, 0, width, height, 0, 0, width, height,
+        pixels_msdf, &bmi, DIB_RGB_COLORS, SRCCOPY);
+}
+
+static void render_both(int codepoint) {
+    render_codepoint_mode(codepoint, stbtt_stream::DfMode::SDF,
+        pixels_sdf, (uint32_t)width);
+
+    render_codepoint_mode(codepoint, stbtt_stream::DfMode::MSDF,
+        pixels_msdf, (uint32_t)width * 4u);
+
+    if (g_hwnd_sdf)  InvalidateRect(g_hwnd_sdf, 0, TRUE);
+    if (g_hwnd_msdf) InvalidateRect(g_hwnd_msdf, 0, TRUE);
+}
+
+LRESULT CALLBACK wnd_proc_sdf(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     switch (msg) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(hwnd, &ps);
-        paint(dc);
+        paint_sdf(dc);
         EndPaint(hwnd, &ps);
         return 0;
     }
     case WM_CHAR: {
-        wchar_t wc = (wchar_t)w;
-        render_codepoint((int)wc);
-        InvalidateRect(hwnd, 0, TRUE);
+        render_both((int)(wchar_t)w);
         return 0;
     }
-    case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_DESTROY: {
+        // закриваємо обидва: коли одне закрили — виходимо
+        PostQuitMessage(0);
+        return 0;
+    }
+    }
+    return DefWindowProc(hwnd, msg, w, l);
+}
+
+LRESULT CALLBACK wnd_proc_msdf(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        paint_msdf(dc);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_CHAR: {
+        render_both((int)(wchar_t)w);
+        return 0;
+    }
+    case WM_DESTROY: {
+        PostQuitMessage(0);
+        return 0;
+    }
     }
     return DefWindowProc(hwnd, msg, w, l);
 }
 
 int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
+    pixels_sdf = (u8*)VirtualAlloc(nullptr, (size_t)width * (size_t)height,
+        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    pixels_msdf = (u8*)VirtualAlloc(nullptr, (size_t)width * (size_t)height * 4u,
+        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!pixels_sdf || !pixels_msdf) fail();
+
     size_t sz = 0;
     uint8_t* font_data = load_font(font_ttf, &sz);
     if (!font_data) fail();
     if (!g_font.ReadBytes(font_data)) fail();
 
-    render_codepoint(0x0416); // Ж
+    // initial
+    render_both(0x0416); // Ж
 
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = wnd_proc;
-    wc.hInstance = h;
-    wc.lpszClassName = L"TTWin";
-    RegisterClassW(&wc);
+    WNDCLASSW wc1{};
+    wc1.lpfnWndProc = wnd_proc_sdf;
+    wc1.hInstance = h;
+    wc1.lpszClassName = L"TTWinSDF";
+    RegisterClassW(&wc1);
 
-    CreateWindowW(L"TTWin", L"1-glyph StreamSDF", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, 400, 400, 0, 0, h, 0);
+    WNDCLASSW wc2{};
+    wc2.lpfnWndProc = wnd_proc_msdf;
+    wc2.hInstance = h;
+    wc2.lpszClassName = L"TTWinMSDF";
+    RegisterClassW(&wc2);
+
+    g_hwnd_sdf = CreateWindowW(L"TTWinSDF", L"SDF (8-bit)", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        100, 100, 420, 420, 0, 0, h, 0);
+
+    g_hwnd_msdf = CreateWindowW(L"TTWinMSDF", L"MSDF (RGB)", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        560, 100, 420, 420, 0, 0, h, 0);
 
     MSG msg;
     while (GetMessageW(&msg, 0, 0, 0)) {
@@ -186,5 +280,7 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
     }
 
     VirtualFree(font_data, 0, MEM_RELEASE);
+    VirtualFree(pixels_sdf, 0, MEM_RELEASE);
+    VirtualFree(pixels_msdf, 0, MEM_RELEASE);
     ExitProcess(0);
 }
