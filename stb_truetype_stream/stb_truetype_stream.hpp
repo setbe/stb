@@ -106,7 +106,10 @@ struct GlyphPlanInfo {
     bool is_empty;
 };
 struct GlyphScratch {
+    // intersections: better be enough per codepoint
     static constexpr uint16_t MAX_XS = 256;
+
+    // 512 composite glyphs per codepoint
     static constexpr uint16_t VISIT_CAP = 512;
 
     uint8_t* flags;  // [max_points]
@@ -121,6 +124,33 @@ struct GlyphScratch {
     uint16_t* visit;      // [visit_cap]
     uint16_t  visit_n;
 };
+struct Xform {
+    // [ m00 m01 dx ]
+    // [ m10 m11 dy ]
+    float m00{1.f}, m01{0.f};
+    float m10{0.f}, m11{1.f};
+    float dx{0.f}, dy{0.f};
+
+    static inline Xform identity() noexcept { return{}; }
+};
+
+static inline void xform_apply(const Xform& xf, float x, float y, float& ox, float& oy) noexcept {
+    ox = xf.m00 * x + xf.m01 * y + xf.dx;
+    oy = xf.m10 * x + xf.m11 * y + xf.dy;
+}
+
+// child = parent ∘ local  (apply local, then parent)
+static inline Xform xform_compose(const Xform& parent, const Xform& local) noexcept {
+    Xform r;
+    r.m00 = parent.m00 * local.m00 + parent.m01 * local.m10;
+    r.m01 = parent.m00 * local.m01 + parent.m01 * local.m11;
+    r.m10 = parent.m10 * local.m00 + parent.m11 * local.m10;
+    r.m11 = parent.m10 * local.m01 + parent.m11 * local.m11;
+
+    r.dx = parent.m00 * local.dx + parent.m01 * local.dy + parent.dx;
+    r.dy = parent.m10 * local.dx + parent.m11 * local.dy + parent.dy;
+    return r;
+}
 
 struct PlanInput {
     DfMode   mode;
@@ -519,10 +549,10 @@ struct SdfDistanceBBoxPass {
         }
     }
 };
-struct MsfDistanceBBoxPass {
+struct MsdfDistanceBBoxPass {
     DfGridFast& g;
 
-    explicit MsfDistanceBBoxPass(DfGridFast& gg) noexcept : g(gg) {}
+    explicit MsdfDistanceBBoxPass(DfGridFast& gg) noexcept : g(gg) {}
 
     inline void begin() noexcept {
         const int n = g.w * g.h;
@@ -607,11 +637,11 @@ struct DfSignScanlinePass {
 
     static inline void sort_small(float* a, int n) noexcept {
         // insertion sort, n small
-        for (int i = 1; i < n; ++i) {
+        for (int i=1; i<n; ++i) {
             float v = a[i];
-            int j = i - 1;
-            while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; --j; }
-            a[j + 1] = v;
+            int j = i-1;
+            while (j >= 0 && a[j] > v) { a[j+1] = a[j]; --j; }
+            a[j+1] = v;
         }
     }
 
@@ -621,11 +651,11 @@ struct DfSignScanlinePass {
         // parity fill: pairs [x0,x1], [x2,x3], ...
         // write into g.inside[y*w + x]
         int w = g.w;
-        for (int x = 0; x < w; ++x) g.inside[y * w + x] = 0;
+        for (int x=0; x<w; ++x) g.inside[y*w + x] = 0;
 
-        for (int i = 0; i + 1 < count; i += 2) {
+        for (int i=0; i+1 < count; i += 2) {
             float x0 = xs[i];
-            float x1 = xs[i + 1];
+            float x1 = xs[i+1];
 
             // convert font-space x to pixel indices
             int px0 = (int)((x0 - g.origin_x) * g.scale);
@@ -633,27 +663,12 @@ struct DfSignScanlinePass {
 
             if (px0 > px1) { int t = px0; px0 = px1; px1 = t; }
             if (px0 < 0) px0 = 0;
-            if (px1 >= w) px1 = w - 1;
+            if (px1 >= w) px1 = w-1;
 
-            for (int x = px0; x <= px1; ++x) g.inside[y * w + x] = 1;
+            for (int x = px0; x <= px1; ++x) g.inside[y*w + x] = 1;
         }
     }
 };
-template<class Sink>
-static void emit_quad(Sink& s,
-                      float x0, float y0, float x1, float y1,
-                      float x2, float y2, float flat) noexcept {
-    const float mx = (x0 + 2*x1 + x2) * .25f,  lx = (x0+x2)*.5f,  dx = mx-lx;
-    const float my = (y0 + 2*y1 + y2) * .25f,  ly = (y0+y2)*.5f,  dy = my-ly;
-    if (dx*dx + dy*dy <= flat) {
-        s.line(x2,y2);
-        return;
-    }
-    const float x01 = (x0+x1)*.5f,  x12 = (x1+x2)*.5f,  xo = (x01+x12)*.5f;
-    const float y01 = (y0+y1)*.5f,  y12 = (y1+y2)*.5f,  yo = (y01+y12)*.5f;
-    emit_quad(s, x0,y0, x01,y01, xo,yo, flat);
-    emit_quad(s, xo,yo, x12,y12, x2,y2, flat);
-}
 
 struct NullSink {
     inline void begin() noexcept {}
@@ -676,7 +691,7 @@ struct GlyphSink {
     virtual ~GlyphSink() noexcept = default;
 };
 template<class Pass>
-struct DfSink final : GlyphSink {
+struct DfSink {
     Pass& pass;
     float x{}, y{};
     float sx{}, sy{};
@@ -686,50 +701,61 @@ struct DfSink final : GlyphSink {
     DfSink() = delete;
     explicit DfSink(Pass& p) noexcept : pass(p) {}
 
-    inline void begin() noexcept override { pass.begin(); }
-    inline void set_origin(float ox, float oy) noexcept override { pass.set_origin(ox,oy); }
-    inline void set_edge_color(uint8_t c) noexcept override { edge_color = c; }
+    inline void begin() noexcept { pass.begin(); }
+    inline void set_origin(float ox, float oy) noexcept { pass.set_origin(ox,oy); }
+    inline void set_edge_color(uint8_t c) noexcept { edge_color = c; }
 
-    inline void move(float nx, float ny) noexcept override {
+    inline void move(float nx, float ny) noexcept {
         x = sx = nx;
         y = sy = ny;
         open = true;
     }
 
-    inline void line(float nx, float ny) noexcept override {
+    inline void line(float nx, float ny) noexcept {
         pass.line(x,y, nx,ny, edge_color);
         x = nx; y = ny;
     }
 
-    inline void quad(float cx, float cy,
-                     float nx, float ny) noexcept override {
-        emit_quad(*this, x,y, cx,cy, nx,ny, /*flat*/0.25f);
+    inline void quad(float cx, float cy, float nx, float ny) noexcept {
+        // fixed-step flatten (cheap, predictable)
+        constexpr int STEPS = 4;
+        float ax = x, ay = y;
+        for (int i=1; i<=STEPS; ++i) {
+            const float t  = (float)i * (1.0f / (float)STEPS);
+            const float mt = 1.f - t;
+
+            const float bx = mt*mt*x + 2.f*mt*t*cx + t*t*nx;
+            const float by = mt*mt*y + 2.f*mt*t*cy + t*t*ny;
+
+            pass.line(ax, ay, bx, by, edge_color);
+            ax = bx; ay = by;
+        }
         x = nx; y = ny;
     }
 
-    inline void close() noexcept override {
-        if (open && (x != sx || y != sy))
-            pass.line(x,y, sx,sy, edge_color);
-        open = false;
-    }
-
-    inline void cubic(float cx1, float cy1,
-                      float cx2, float cy2,
-                      float nx, float ny) noexcept override {
-        const int STEPS = 8;
-        float ax = x;
-        float ay = y;
-
+    inline void cubic(float cx1, float cy1, float cx2, float cy2, float nx, float ny) noexcept {
+        // fixed-step cubic flatten
+        constexpr int STEPS = 8;
+        float ax = x, ay = y;
         for (int i=1; i<=STEPS; ++i) {
-            float t = static_cast<float>(i) / STEPS;
-            float mt = 1.f - t;
-            float bx = (mt*mt*mt)*x + 3*(mt*mt)*t*cx1 + 3*mt*t*t*cx2 + t*t*t*nx;
-            float by = (mt*mt*mt)*y + 3*(mt*mt)*t*cy1 + 3*mt*t*t*cy2 + t*t*t*ny;
+            const float t  = (float)i * (1.0f / (float)STEPS);
+            const float mt = 1.f - t;
+            const float bx = (mt*mt*mt)*x + 3.f*(mt*mt)*t*cx1
+                                          + 3.f*mt*(t*t)*cx2 + (t*t*t)*nx;
+
+            const float by = (mt*mt*mt)*y + 3.f*(mt*mt)*t*cy1
+                                          + 3.f*mt*(t*t)*cy2 + (t*t*t)*ny;
+
             pass.line(ax,ay, bx,by, edge_color);
             ax=bx; ay=by;
         }
-
         x = nx; y = ny;
+    }
+
+    inline void close() noexcept {
+        if (open && (x != sx || y != sy))
+            pass.line(x, y, sx, sy, edge_color);
+        open = false;
     }
 
     // ----------- RELATIVE METHODS ------------
@@ -738,7 +764,7 @@ struct DfSink final : GlyphSink {
     inline void rcubic(float cx1, float cy1,
                        float cx2, float cy2,
                        float nx, float ny) noexcept {
-        cubic(x+cx1, y+cy1, x+cx2, y+cy2, x+nx, y+ny);
+        cubic(x+cx1, y+cy1,  x+cx2, y+cy2,  x+nx, y+ny);
     }
 
 }; // struct DfSink
@@ -774,7 +800,9 @@ static inline uint16_t skyline_fit(const Skyline& s, int idx, uint16_t rw, uint1
     while (width_left > 0) {
         if (i >= s.node_count) return 0xFFFF;
         if (s.nodes[i].y > y) y = s.nodes[i].y;
-        if ((uint32_t)y + rh > 0xFFFF) return 0xFFFF; // defensive
+
+        if ((uint32_t)y + rh > s.width) return 0xFFFF; // defensive
+
         if (s.nodes[i].w >= width_left) break;
         width_left = (uint16_t)(width_left - s.nodes[i].w);
         ++i;
@@ -788,8 +816,8 @@ static inline bool skyline_insert(Skyline& s, uint16_t rw, uint16_t rh, uint16_t
 
     for (int i = 0; i < s.node_count; ++i) {
         uint16_t y = skyline_fit(s, i, rw, rh);
-        if (y == 0xFFFF) continue;
-
+        if (y == 0xFFFF)
+            continue;
         // heuristic: minimal y, then minimal width
         if (y < best_y || (y == best_y && s.nodes[i].w < best_w)) {
             best_y = y;
@@ -797,8 +825,8 @@ static inline bool skyline_insert(Skyline& s, uint16_t rw, uint16_t rh, uint16_t
             best_w = s.nodes[i].w;
         }
     }
-
     if (best_idx < 0) return false;
+    if ((uint32_t)best_y + rh > s.width) return false;
 
     out_x = s.nodes[best_idx].x;
     out_y = best_y;
@@ -887,8 +915,9 @@ public:
     static inline int GetNumberOfFonts(const uint8_t* font_buffer) noexcept;
 
 private:
-    bool RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
-                       GlyphScratch& scratchі, uint16_t max_points) noexcept;
+    template<class SinkT>
+    bool RunGlyfStream(int glyph_index, SinkT& sink, const Xform& xf, float spread,
+                        GlyphScratch& scratch, uint16_t max_points) noexcept;
 
     // --- Parsing helpers ---
     inline int GetGlyfOffset(int glyph_index) const noexcept;
@@ -902,7 +931,7 @@ private:
     static uint32_t ulong_(const uint8_t* p) noexcept  { return (p[0]<<24) + (p[1]<<16) + (p[2]<<8) + p[3]; }
     static int32_t  long_(const uint8_t* p) noexcept   { return (p[0]<<24) + (p[1]<<16) + (p[2]<<8) + p[3]; }
     // --- helpers: `RunGlyfStream` local ---
-    static inline bool is_on_u8_(uint8_t f) noexcept { return (f & 0x80) != 0; } // our reserved bit
+    static inline bool is_on_(uint8_t f) noexcept { return (f & 0x80) != 0; } // our reserved bit
     static inline void set_on_u8_(uint8_t& f, bool on) noexcept {
         f = (uint8_t)((f & 0x7F) | (on ? 0x80 : 0x00));
     }
@@ -1001,28 +1030,33 @@ inline bool Font::StreamDF(const GlyphPlan& gp,
     // 1) distance pass
     // =====================================================================
     if (mode == DfMode::MSDF) {
-        MsfDistanceBBoxPass pass(gg);
-        DfSink<MsfDistanceBBoxPass> sink(pass);
-        if (!RunGlyfStream(gp.glyph_index, sink, spread, scratch, max_points))
+        MsdfDistanceBBoxPass pass(gg);
+        DfSink<MsdfDistanceBBoxPass> sink(pass);
+        const Xform id = Xform::identity();
+
+        if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
             return false;
     }
     else {
         SdfDistanceBBoxPass pass(gg);
         DfSink<SdfDistanceBBoxPass> sink(pass);
-        if (!RunGlyfStream(gp.glyph_index, sink, spread, scratch, max_points))
+        const Xform id = Xform::identity();
+
+        if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
             return false;
     }
 
     // =====================================================================
-   // 2) sign pass (same for both)
-   // =====================================================================
+    // 2) sign pass (same for both)
+    // =====================================================================
     {
         DfSignScanlinePass pass(gg, scratch.xs);
         DfSink<DfSignScanlinePass> sink(pass);
+        const Xform id = Xform::identity();
 
         for (int y=0; y<h; ++y) {
             pass.begin_row(y);
-            if (!RunGlyfStream(gp.glyph_index, sink, spread, scratch, max_points))
+            if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
                 return false;
             pass.finalize_row(y);
         }
@@ -1234,6 +1268,8 @@ inline bool Font::Plan(const PlanInput& in,
         for (uint32_t i = 0; i < glyph_count; ++i) {
             uint16_t x, y;
             if (!skyline_insert(sk, glyphs[i].rect.w, glyphs[i].rect.h, x, y)) {
+                if ((uint32_t)x + glyphs[i].rect.w > side) return false;
+                if ((uint32_t)y + glyphs[i].rect.h > side) return false;
                 ok = false;
                 break;
             }
@@ -1281,7 +1317,8 @@ inline bool Font::Build(const FontPlan& plan,
     if (!plan.atlas_side || !plan.glyph_count) return false;
 
     const uint32_t comp = (plan.mode == DfMode::MSDF) ? 3u : 1u;
-    if (atlas_stride_bytes < (uint32_t)plan.atlas_side * comp) return false;
+    if (atlas_stride_bytes < (uint32_t)plan.atlas_side * comp)
+        return false;
 
     // bind scratch views (also sets visit_n=0, etc.)
     GlyphScratch scratch = bind_glyph_scratch(plan._scratch_mem,
@@ -1293,8 +1330,10 @@ inline bool Font::Build(const FontPlan& plan,
         const GlyphPlan& gp = plan._glyphs[i];
 
         // bounds check (atlas is square side x side)
-        if ((uint32_t)gp.rect.x + gp.rect.w > plan.atlas_side) return false;
-        if ((uint32_t)gp.rect.y + gp.rect.h > plan.atlas_side) return false;
+        if ((uint32_t)gp.rect.x + gp.rect.w > plan.atlas_side)
+            return false;
+        if ((uint32_t)gp.rect.y + gp.rect.h > plan.atlas_side)
+            return false;
 
         // IMPORTANT: reset recursion guard per glyph
         scratch.visit_n = 0;
@@ -1339,31 +1378,39 @@ struct VisitGuard {
     inline bool ok() const noexcept { return pushed; }
 };
 
-bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
-                         GlyphScratch& scratch, uint16_t max_points) noexcept {
-    bool ok = false;
-
+template<class SinkT>
+bool Font::RunGlyfStream(int glyph_index,
+                         SinkT& sink,
+                         const Xform& xf,
+                         float /*spread*/,
+                         GlyphScratch& scratch,
+                         uint16_t max_points) noexcept {
     if (!_glyf || !_loca) return false;
     if ((unsigned)glyph_index >= (unsigned)_num_glyphs) return false;
 
     VisitGuard root(scratch, (uint16_t)glyph_index);
     if (!root.ok()) return false;
 
+    // call begin() only for the top-level glyph in this stream
+    if (scratch.visit_n == 1)
+        sink.begin();
+
     auto glyph_offset = [&](int g) -> uint32_t {
         return _index_to_loc_format == 0 ?
-              _glyf + 2u * (uint32_t)ushort_(_data + _loca + 2*g)
-            : _glyf +      (uint32_t) ulong_(_data + _loca + 4*g);
+              _glyf + 2u * (uint32_t)ushort_(_data+_loca + 2*g)
+            : _glyf +      (uint32_t)ulong_ (_data+_loca + 4*g);
     };
 
-    const uint32_t g0 = glyph_offset(glyph_index);
-    const uint32_t g1 = glyph_offset(glyph_index + 1);
-    if (g0 == g1) return false; // empty glyph
-
-    const uint8_t* g = _data + g0;
+    const uint8_t* g = _data + glyph_offset(glyph_index);
+    {
+        const uint32_t g0 = g - _data;
+        const uint32_t g1 = glyph_offset(glyph_index + 1);
+        if (g0 == g1)
+            return false; // empty glyph
+    } 
     const int16_t num_contours = short_(g);
     g += 10;
 
-    sink.begin();
     // ------------------------------------------------------------
     // SIMPLE GLYPH
     // ------------------------------------------------------------
@@ -1372,10 +1419,9 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
 
         // --- end points of contours ---
         const uint8_t* end_pts = g;
-        g += 2 * ncontours;
+        g += 2*ncontours;
 
-        const uint16_t num_points = ushort_(end_pts + 2 * (ncontours - 1)) + 1;
-        STBTT_assert(num_points <= max_points);
+        const uint16_t num_points = ushort_(end_pts + 2*(ncontours-1)) + 1;
         if (num_points > max_points) return false;
 
         // --- instructions ---
@@ -1387,115 +1433,143 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
         int16_t* px = scratch.px;
         int16_t* py = scratch.py;
 
-        uint16_t fcount = 0;
-        while (fcount < num_points) {
-            uint8_t f = *g++;
-            flags[fcount++] = f;
-            if (f & 8) { // repeat
-                uint8_t r = *g++;
-                while (r-- && fcount < num_points) flags[fcount++] = f;
+        { // flags (with repeats)
+            uint16_t fcount = 0;
+            while (fcount < num_points) {
+                uint8_t f = *g++;
+                flags[fcount++] = f;
+                if (f & 8) { // repeat
+                    uint8_t r = *g++;
+                    while (r-- && fcount < num_points) flags[fcount++] = f;
+                }
             }
         }
 
         // --- decode X coordinates ---
         int x = 0;
-        for (uint16_t i = 0; i < num_points; ++i) {
+        for (int i=0; i<num_points; ++i) {
             int dx = 0;
-            if (flags[i] & 2) { // x-short
+            const uint8_t f = flags[i];
+            if (f & 2) { // x-short
                 uint8_t v = *g++;
-                dx = (flags[i] & 16) ? (int)v : -(int)v;
+                dx = (f & 16) ? (int)v : -(int)v;
             }
-            else if (!(flags[i] & 16)) { // x is int16
+            else if (!(f & 16)) { // x is int16
                 dx = short_(g);
-                g += 2;
+                g+=2;
             } // else same as previous (dx=0)
             x += dx;
             px[i] = (int16_t)x;
 
             // cache on-curve into reserved bit (bit 7)
-            set_on_u8_(flags[i], (flags[i] & 1) != 0);
+            set_on_u8_(flags[i], (f&1) != 0);
         }
 
         // --- decode Y coordinates ---
         int y = 0;
-        for (uint16_t i = 0; i < num_points; ++i) {
+        for (int i=0; i<num_points; ++i) {
             int dy = 0;
-            if (flags[i] & 4) { // y-short
+            const uint8_t f = flags[i];
+            if (f & 4) { // y-short
                 uint8_t v = *g++;
-                dy = (flags[i] & 32) ? (int)v : -(int)v;
+                dy = (f & 32) ? (int)v : -(int)v;
             }
-            else if (!(flags[i] & 32)) { // y is int16
+            else if (!(f & 32)) { // y is int16
                 dy = short_(g);
-                g += 2;
+                g+=2;
             }
             y += dy;
             py[i] = (int16_t)y;
         }
 
+        // small helper to emit transformed points
+        auto emit_move = [&](float x0, float y0) noexcept {
+            float tx, ty; xform_apply(xf, x0, y0, tx, ty);
+            sink.move(tx, ty);
+        };
+        auto emit_line = [&](float x0, float y0) noexcept {
+            float tx, ty; xform_apply(xf, x0, y0, tx, ty);
+            sink.line(tx, ty);
+        };
+        auto emit_quad = [&](float cx, float cy, float x1, float y1) noexcept {
+            float tcx, tcy, tx, ty;
+            xform_apply(xf, cx, cy, tcx, tcy);
+            xform_apply(xf, x1, y1, tx, ty);
+            sink.quad(tcx, tcy, tx, ty);
+        };
+        auto emit_cubic = [&](float cx1, float cy1, float cx2, float cy2, float x1, float y1) noexcept {
+            float tcx1,tcy1, tcx2,tcy2, tx,ty;
+            xform_apply(xf, cx1, cy1, tcx1, tcy1);
+            xform_apply(xf, cx2, cy2, tcx2, tcy2);
+            xform_apply(xf, x1,  y1,  tx,  ty);
+            sink.cubic(tcx1, tcy1, tcx2, tcy2, tx, ty);
+        };
+
         // --- emit contours ---
         uint16_t start = 0;
         for (int c = 0; c < ncontours; ++c) {
-            const uint16_t end = ushort_(end_pts + 2 * c);
 
-            sink.set_edge_color(c % 3);
+            sink.set_edge_color((uint8_t)(c % 3));
+            const uint16_t end = ushort_(end_pts + 2*c);
+            const uint16_t s = start;
 
-            auto idx_prev = [&](uint16_t i) noexcept -> uint16_t { return i==start ? end : (uint16_t)(i-1); };
-            auto idx_next = [&](uint16_t i) noexcept -> uint16_t { return i==end ? start : (uint16_t)(i+1); };
-            auto on = [&](uint16_t i) noexcept -> bool { return is_on_u8_(flags[i]); };
-
-            // --- choose start point (same logic as your original) ---
-            uint16_t s = start;
-            if (!on(s)) {
-                uint16_t prev = idx_prev(s);
-                if (!on(prev)) {
+            if (!is_on_(flags[ s ])) {
+                const uint16_t prev = (s==start) ? end : (uint16_t)(s-1);;
+                if (!is_on_(flags[ prev ])) {
                     // start at midpoint of two off-curve points
-                    sink.move(0.5f * (float(px[s]) + float(px[prev])),
+                    emit_move(0.5f * (float(px[s]) + float(px[prev])),
                               0.5f * (float(py[s]) + float(py[prev])));
                 }
-                else {
-                    sink.move((float)px[prev], (float)py[prev]);
-                }
+                else { emit_move((float)px[prev], (float)py[prev]); }
             }
-            else {
-                sink.move((float)px[s], (float)py[s]);
-            }
+            else { emit_move((float)px[s], (float)py[s]); }
 
             uint16_t i = s;
-            while (true) {
-                uint16_t ni = idx_next(i);
+            
 
-                if (on(i) && on(ni)) {
-                    sink.line((float)px[ni], (float)py[ni]);
+            while (true) {
+                const uint16_t ni = (i==end) ? start : (uint16_t)(i+1);;
+
+                const bool on_i = is_on_(flags[i]);
+                const bool on_ni = is_on_(flags[ni]);
+
+                const float xi = (float)px[i];
+                const float yi = (float)py[i];
+                const float xni = (float)px[ni];
+                const float yni = (float)py[ni];
+
+                if (on_i && on_ni) {
+                    emit_line(xni, yni);
                 }
-                else if (on(i) && !on(ni)) {
-                    uint16_t nn = idx_next(ni);
-                    if (on(nn)) {
-                        sink.quad((float)px[ni], (float)py[ni],
-                                  (float)px[nn], (float)py[nn]);
+                else if (on_i && !on_ni) {
+                    uint16_t nn = (ni==end) ? start : (uint16_t)(ni+1);
+                    const float xnn = (float)px[nn];
+                    const float ynn = (float)py[nn];
+
+                    if (is_on_(flags[nn])) {
+                        emit_quad(xni, yni, xnn, ynn);
                     }
                     else {
                         // off->off after on: implicit on at midpoint
-                        float mx = 0.5f * (float(px[ni]) + float(px[nn]));
-                        float my = 0.5f * (float(py[ni]) + float(py[nn]));
-                        sink.quad((float)px[ni], (float)py[ni], mx, my);
+                        const float xm = 0.5f * (xni + xnn);
+                        const float ym = 0.5f * (yni + ynn);
+                        emit_quad(xni, yni, xm, ym);
                     }
                 }
-                else if (!on(i) && on(ni)) {
-                    sink.quad((float)px[i], (float)py[i],
-                              (float)px[ni], (float)py[ni]);
+                else if (!on_i && on_ni) {
+                    emit_quad(xi, yi, xni, yni);
                 }
                 else { // off -> off
-                    float mx = 0.5f * (float(px[i]) + float(px[ni]));
-                    float my = 0.5f * (float(py[i]) + float(py[ni]));
-                    sink.quad((float)px[i], (float)py[i], mx, my);
+                    const float xm = 0.5f * (xi + xni);
+                    const float ym = 0.5f * (yi + yni);
+                    sink.quad(xi, yi, xm, ym);
                 }
-
                 i = ni;
                 if (i==s) break;
             }
 
             sink.close();
-            start = (uint16_t)(end+1);
+            start = (uint16_t)(end + 1);
         }
     }
     // ------------------------------------------------------------
@@ -1503,11 +1577,12 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
     // ------------------------------------------------------------
     else {
         const uint8_t* p = g;
-        uint16_t flags;
-
+        uint16_t flags = 0;
         do {
-                   flags = ushort_(p); p+=2;
-            uint16_t sub = ushort_(p); p+=2;
+            flags = ushort_(p);
+            p+=2;
+            const uint16_t sub_glyf = ushort_(p);
+            p+=2;
 
             // ---- parse args correctly (MUST advance p always) ----
             // TrueType flags:
@@ -1521,77 +1596,51 @@ bool Font::RunGlyfStream(int glyph_index, GlyphSink& sink, float spread,
 
             // args
             int16_t arg1=0, arg2=0;
-            if (flags & 0x0001) { arg1 = short_(p); arg2 = short_(p+2); p += 4; }
-            else { arg1 = (int8_t)p[0]; arg2 = (int8_t)p[1]; p += 2; }
+            if (flags & 0x0001) {
+                arg1 = short_(p);
+                arg2 = short_(p+2);
+                p+=4;
+            }
+            else {
+                arg1 = (int8_t)p[0];
+                arg2 = (int8_t)p[1];
+                p+=2;
+            }
 
             float e=0.f, f=0.f;
-            if (flags & 0x0002) { e = (float)arg1; f = (float)arg2; }
+            if (flags & 0x0002) { e = (float)arg1; f = (float)arg2; } // XY values
+            // else: point-to-point not supported (but parsed correctly)
 
-            float a=1.f,b=0.f,c=0.f,d=1.f;
-            if (flags & 0x0008) { a = d = short_(p)/16384.f; p += 2; }
-            else if (flags & 0x0040) { a = short_(p)/16384.f; d = short_(p+2)/16384.f; p += 4; }
-            else if (flags & 0x0080) { a = short_(p)/16384.f; b = short_(p+2)/16384.f; c = short_(p+4)/16384.f; d = short_(p+6)/16384.f; p += 8; }
+            float a=1.f, b=0.f, c=0.f, d=1.f;
+            if (flags & 0x0008) {
+                a=d= short_(p + 0) / 16384.f;
+                p+=2;
+            }
+            else if (flags & 0x0040) {
+                a = short_(p + 0) / 16384.f;
+                d = short_(p + 2) / 16384.f;
+                p+=4;
+            }
+            else if (flags & 0x0080) {
+                a = short_(p + 0) / 16384.f;
+                b = short_(p + 2) / 16384.f;
+                c = short_(p + 4) / 16384.f;
+                d = short_(p + 6) / 16384.f;
+                p+=8;
+            }
 
-            struct XformSink final : GlyphSink {
-                GlyphSink& out;
+            const Xform local{ a,b, c,d, e,f };
+            const Xform child = xform_compose(xf, local);
 
-                // affine matrix:
-                // [ m00 m01 dx ]
-                // [ m10 m11 dy ]
-                float m00, m01;
-                float m10, m11;
-                float dx, dy;
-
-                XformSink(GlyphSink& out_,
-                    float m00_, float m01_,
-                    float m10_, float m11_,
-                    float dx_, float dy_) noexcept
-                    : out(out_)
-                    , m00(m00_), m01(m01_)
-                    , m10(m10_), m11(m11_)
-                    , dx(dx_), dy(dy_)
-                {}
-
-                inline void begin() noexcept override { }
-                inline void set_origin(float, float) noexcept override { }
-
-                inline void close() noexcept override { }
-
-                inline void move(float x, float y) noexcept override {
-                    out.move(m00 * x + m01 * y + dx,
-                             m10 * x + m11 * y + dy);
-                }
-                inline void line(float x, float y) noexcept override {
-                    out.line(m00 * x + m01 * y + dx,
-                             m10 * x + m11 * y + dy);
-                }
-                inline void quad(float cx, float cy,
-                                 float x, float y) noexcept override {
-                    out.quad(m00 * cx + m01 * cy + dx,
-                             m10 * cx + m11 * cy + dy,
-                             m00 * x  + m01 * y  + dx,
-                             m10 * x  + m11 * y  + dy);
-                }
-                inline void cubic(float cx1, float cy1,
-                                  float cx2, float cy2,
-                                  float x,   float y) noexcept override {
-                    out.cubic(m00 * cx1 + m01 * cy1 + dx,
-                              m10 * cx1 + m11 * cy1 + dy,
-                              m00 * cx2 + m01 * cy2 + dx,
-                              m10 * cx2 + m11 * cy2 + dy,
-                              m00 * x   + m01 * y   + dx,
-                              m10 * x   + m11 * y   + dy);
-                }
-            } xs{ sink, a,b, c,d, e,f };
-
-            if (!RunGlyfStream(sub, xs, spread, scratch, max_points))
+            if (!RunGlyfStream((int)sub_glyf, sink, child, /*spread*/0.f, scratch, max_points))
                 return false;
 
         } while (flags & 0x0020); // MORE_COMPONENTS
         // skip instructions if present
         if (flags & 0x0100) { // WE_HAVE_INSTRUCTIONS
-            const uint16_t ilen = ushort_(p); p += 2;
-            p += ilen;
+            const uint16_t ilen = ushort_(p);
+            p+=2;
+            p+=ilen;
         }
     }
     return true;

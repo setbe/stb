@@ -8,6 +8,16 @@
 #include "../stb_truetype_stream/stb_truetype_stream.hpp"
 #include "../stb_truetype_stream/codepoints/stbtt_codepoints_stream.hpp"
 
+// Latin, Cyrillic, Greek, Arabic, Hebrew, Devanagari
+#define FONT_MINIMAL "C:\\Users\\cnota\\Desktop\\test_stb\\arialbd.ttf"
+// Japanese
+#define FONT_JAPANESE "C:\\Users\\cnota\\Desktop\\test_stb\\Gen_Jyuu_Gothic_Monospace_Bold.ttf"
+// CJK
+#define FONT_CJK "C:\\Users\\cnota\\Desktop\\test_stb\\D2CodingBold.ttf"
+
+constexpr float PIXEL_HEIGHT = 32.f;
+constexpr float SPREAD_PX = 4.f;
+
 using u8 = unsigned char;
 using u32 = uint32_t;
 
@@ -121,7 +131,8 @@ static bool generate_atlas_planned(stbtt_stream::Font& font,
 
     // --------- 4) Build ----------
     const bool ok_build = font.Build(plan, atlas, stride_bytes);
-    if (!ok_build) MessageBoxW(nullptr, L"Build failed", L"Error", MB_ICONERROR);
+    if (!ok_build)
+        MessageBoxW(nullptr, L"Build failed", L"Error", MB_ICONERROR);
 
     // --------- 5) write png ----------
     bool ok = ok_build && save_png(out_png, atlas, (int)side, (int)side, (int)comp, (int)stride_bytes);
@@ -132,13 +143,13 @@ static bool generate_atlas_planned(stbtt_stream::Font& font,
 }
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
-    const float pixel_height = 32.f;
-    const float spread_px = 4.f;
+    const float pixel_height = PIXEL_HEIGHT;
+    const float spread_px = SPREAD_PX;
 
     // 1) Latin+Cyrillic+...
     {
         size_t sz;
-        uint8_t* data = load_font("C:\\Users\\cnota\\Desktop\\test_stb\\arialbd.ttf", &sz);
+        uint8_t* data = load_font(FONT_MINIMAL, &sz);
         if (!data) return 1;
 
         stbtt_stream::Font font;
@@ -166,7 +177,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     // 2) Japanese
     {
         size_t sz;
-        uint8_t* data = load_font("C:\\Users\\cnota\\Desktop\\test_stb\\Gen_Jyuu_Gothic_Monospace_Bold.ttf", &sz);
+        uint8_t* data = load_font(FONT_JAPANESE, &sz);
         if (!data) return 1;
 
         stbtt_stream::Font font;
@@ -183,10 +194,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         VirtualFree(data, 0, MEM_RELEASE);
     }
 
-    // 3) Chinese
+    // 3) CJK
     {
         size_t sz;
-        uint8_t* data = load_font("C:\\Users\\cnota\\Desktop\\test_stb\\D2CodingBold.ttf", &sz);
+        uint8_t* data = load_font(FONT_CJK, &sz);
         if (!data) return 1;
 
         stbtt_stream::Font font;
