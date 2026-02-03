@@ -118,7 +118,8 @@ static bool generate_atlas_planned(stbtt_stream::Font& font,
 
     // --------- 3) allocate atlas ----------
     const u32 side = plan.atlas_side;
-    const u32 comp = (mode == stbtt_stream::DfMode::MSDF) ? 3u : 1u;
+    const u32 comp = plan.mode==stbtt_stream::DfMode::SDF ? 1u :
+                     plan.mode==stbtt_stream::DfMode::MSDF ? 3u : 4u;
     const u32 stride_bytes = side * comp;
     const size_t atlas_bytes = (size_t)side * (size_t)side * (size_t)comp;
 
@@ -171,6 +172,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             stbtt_codepoints::Script::Hebrew,
             stbtt_codepoints::Script::Devanagari);
 
+        generate_atlas_planned(font, L"mtsdf_atlas_1.png", stbtt_stream::DfMode::MTSDF, pixel_height, spread_px,
+            stbtt_codepoints::Script::Latin,
+            stbtt_codepoints::Script::Cyrillic,
+            stbtt_codepoints::Script::Greek,
+            stbtt_codepoints::Script::Arabic,
+            stbtt_codepoints::Script::Hebrew,
+            stbtt_codepoints::Script::Devanagari);
+
         VirtualFree(data, 0, MEM_RELEASE);
     }
 
@@ -191,6 +200,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             stbtt_codepoints::Script::Kana,
             stbtt_codepoints::Script::JouyouKanji);
 
+        generate_atlas_planned(font, L"mtsdf_atlas_2.png", stbtt_stream::DfMode::MTSDF, pixel_height, spread_px,
+            stbtt_codepoints::Script::Kana,
+            stbtt_codepoints::Script::JouyouKanji);
+
         VirtualFree(data, 0, MEM_RELEASE);
     }
 
@@ -207,6 +220,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
             stbtt_codepoints::Script::CJK);
 
         generate_atlas_planned(font, L"msdf_atlas_3.png", stbtt_stream::DfMode::MSDF, pixel_height, spread_px,
+            stbtt_codepoints::Script::CJK);
+
+        generate_atlas_planned(font, L"mtsdf_atlas_3.png", stbtt_stream::DfMode::MTSDF, pixel_height, spread_px,
             stbtt_codepoints::Script::CJK);
 
         VirtualFree(data, 0, MEM_RELEASE);

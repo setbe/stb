@@ -85,7 +85,7 @@ static void render_codepoint_mode(int codepoint,
     }
 
     // clear output buffer
-    const uint32_t comp = (mode == stbtt_stream::DfMode::MSDF) ? 4u : 1u; // for our output (BGRA or Gray)
+    const uint32_t comp = (mode == stbtt_stream::DfMode::SDF) ? 1u : 4u; // for our output (Gray or BGRA)
     memset(out_pixels, 0, (size_t)width * (size_t)height * comp);
 
     // Build writes:
@@ -211,7 +211,7 @@ LRESULT CALLBACK wnd_proc_sdf(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_DESTROY: {
-        // закриваємо обидва: коли одне закрили — виходимо
+        // Close both windows: when a window closed
         PostQuitMessage(0);
         return 0;
     }

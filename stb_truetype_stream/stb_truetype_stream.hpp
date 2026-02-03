@@ -42,9 +42,17 @@ SOFTWARE.
 #   define STBTT_assert
 #endif
 
+#ifndef STBTT_STREAM_MAX_XS
+#   define STBTT_STREAM_MAX_XS 256
+#endif // STBTT_STREAM_MAX_XS
+
+#ifndef STBTT_STREAM_VISIT_CAP
+#   define STBTT_STREAM_VISIT_CAP 512
+#endif // STBTT_STREAM_VISIT_CAP
+
 namespace stbtt_stream {
-enum class DfMode : uint8_t { SDF = 1, MSDF = 3 };
-enum : uint8_t { EDGE_R = 0, EDGE_G = 1, EDGE_B = 2 };
+enum class DfMode : uint8_t { SDF=1, MSDF=3, MTSDF=4 };
+enum : uint8_t { EDGE_R, EDGE_G, EDGE_B };
 
 // some of the values for the IDs are below; for more see the truetype spec:
 // Apple (archive) https://web.archive.org/web/20090113004145/http://developer.apple.com/textfonts/TTRefMan/RM06/Chap6name.html
@@ -99,31 +107,46 @@ struct GlyphPlan {
 
     GlyphRect rect;     // packed placement
     uint16_t num_points;// for scratch validation (simple glyph)
-};
+}; // struct GlyphPlan
 struct GlyphPlanInfo {
     int16_t x_min, y_min, x_max, y_max;
     uint16_t max_points_in_tree; // max num_points among simple subglyphs
     bool is_empty;
-};
+}; // struct GlyphPlanInfo
+
+// Intermediate per-glyph scratch buffer (memory provided by the caller).
 struct GlyphScratch {
-    // intersections: better be enough per codepoint
-    static constexpr uint16_t MAX_XS = 256;
+    // NOTE:
+    // The constants below define *upper bounds* for temporary buffers.
+    // They can be reduced if memory is extremely constrained.
+    //
+    // In practice, the default values consume ~100 KB of scratch memory,
+    // which is perfectly acceptable on desktop-class systems.
+    // Tuning these down only makes sense for embedded or very low-memory targets.
 
-    // 512 composite glyphs per codepoint
-    static constexpr uint16_t VISIT_CAP = 512;
+    // Maximum number of scanline intersections per glyph.
+    // Must be large enough for complex outlines.
+    static constexpr uint16_t MAX_XS = STBTT_STREAM_MAX_XS;
 
-    uint8_t* flags;  // [max_points]
-    int16_t* px;     // [max_points]
-    int16_t* py;     // [max_points]
+    // Maximum number of visited glyphs during composite glyph traversal.
+    // Acts as a recursion / cycle guard.
+    static constexpr uint16_t VISIT_CAP = STBTT_STREAM_VISIT_CAP;
 
-    uint16_t* min_d2; // [max_area]
-    uint8_t* inside; // [max_area]
-    float* xs;     // [max_xs]
+    // Per-point data (sized by max_points)
+    uint8_t* flags;   // On/off-curve flags
+    int16_t* px;      // X coordinates (font units)
+    int16_t* py;      // Y coordinates (font units)
 
-    // ---- composite recursion guard (optional) ----
-    uint16_t* visit;      // [visit_cap]
+    // Per-pixel data (sized by max_area)
+    uint16_t* min_d2;  // Minimum squared distance accumulator
+    uint8_t* inside; // Inside/outside classification mask
+    float* xs;     // X-intersections for scanline tests
+
+    // Composite glyph traversal guard
+    uint16_t* visit;  // Stack / set of visited glyph indices
     uint16_t  visit_n;
 };
+
 struct Xform {
     // [ m00 m01 dx ]
     // [ m10 m11 dy ]
@@ -200,6 +223,8 @@ static inline uint16_t pack_nd2_u16(float d2, float spread) noexcept {
 static inline uint16_t* scratch_d2_r(const GlyphScratch& s) noexcept { return s.min_d2; }
 static inline uint16_t* scratch_d2_g(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area; }
 static inline uint16_t* scratch_d2_b(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area * 2; }
+static inline uint16_t* scratch_d2_a(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area * 3; }
+
 
 
 // Very small bump allocator for "plan_mem" block.
@@ -238,8 +263,11 @@ static inline size_t glyph_scratch_bytes(uint16_t max_points,
     if (mode == DfMode::SDF) {
         off = align_up(off, 16); off += (size_t)max_area * sizeof(uint16_t); // min_d2
     }
-    else {
+    else if (mode == DfMode::MSDF) {
         off = align_up(off, 16); off += (size_t)max_area * sizeof(uint16_t) * 3; // min_d2_r/g/b
+    }
+    else { // MTSDF
+        off = align_up(off, 16); off += (size_t)max_area * sizeof(uint16_t) * 4; // min_d2_r/g/b + min_d2_a
     }
     off = align_up(off, 16); off += (size_t)max_area * sizeof(uint8_t); // inside
     off = align_up(off, 16); off += (size_t)GlyphScratch::MAX_XS * sizeof(float);
@@ -267,7 +295,8 @@ static inline GlyphScratch bind_glyph_scratch(void* mem,
     s.px    = (int16_t*)take((size_t)max_points * sizeof(int16_t), 16);
     s.py    = (int16_t*)take((size_t)max_points * sizeof(int16_t), 16);
 
-    const size_t d2_mult = (mode == DfMode::SDF) ? 1u : 3u;
+    const size_t d2_mult = mode==DfMode::SDF ? 1u :
+                           mode==DfMode::MSDF ? 3u : 4u;
     s.min_d2 = (uint16_t*)take((size_t)max_area * sizeof(uint16_t) * d2_mult, 16);
     s.inside = (uint8_t*) take((size_t)max_area * sizeof(uint8_t), 16);
     s.xs     = (float*)   take((size_t)GlyphScratch::MAX_XS * sizeof(float), 16);
@@ -996,7 +1025,7 @@ inline bool Font::StreamDF(const GlyphPlan& gp,
 
     DfGridFast gg{};
     gg.out = (uint8_t*)atlas;
-    gg.out_comp = (mode == DfMode::MSDF) ? 3 : 1;
+    gg.out_comp = (mode == DfMode::SDF) ? 1 : (mode == DfMode::MSDF) ? 3 : 4;
     gg.out_stride = atlas_stride_bytes;
     gg.shift_x = (int)gp.rect.x;
     gg.shift_y = (int)gp.rect.y;
@@ -1015,21 +1044,35 @@ inline bool Font::StreamDF(const GlyphPlan& gp,
     gg.inside = scratch.inside;
 
     // --------- bind distance buffers ----------
-    if (mode == DfMode::MSDF) {
+    if (mode == DfMode::SDF) {
+        gg.d2 = scratch.min_d2;
+        gg.d2r = gg.d2g = gg.d2b = nullptr;
+    }
+    else if (mode == DfMode::MSDF) {
         gg.d2 = nullptr;
         gg.d2r = scratch_d2_r(scratch);
         gg.d2g = scratch_d2_g(scratch, max_area);
         gg.d2b = scratch_d2_b(scratch, max_area);
     }
-    else {
-        gg.d2 = scratch.min_d2;
-        gg.d2r = gg.d2g = gg.d2b = nullptr;
+    else { // MTSDF
+        gg.d2  = scratch_d2_a(scratch, max_area);
+        gg.d2r = scratch_d2_r(scratch);
+        gg.d2g = scratch_d2_g(scratch, max_area);
+        gg.d2b = scratch_d2_b(scratch, max_area);
     }
 
     // =====================================================================
     // 1) distance pass
     // =====================================================================
-    if (mode == DfMode::MSDF) {
+    if (mode == DfMode::SDF) {
+        SdfDistanceBBoxPass pass(gg);
+        DfSink<SdfDistanceBBoxPass> sink(pass);
+        const Xform id = Xform::identity();
+
+        if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
+            return false;
+    }
+    else if (mode == DfMode::MSDF) {
         MsdfDistanceBBoxPass pass(gg);
         DfSink<MsdfDistanceBBoxPass> sink(pass);
         const Xform id = Xform::identity();
@@ -1037,13 +1080,23 @@ inline bool Font::StreamDF(const GlyphPlan& gp,
         if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
             return false;
     }
-    else {
-        SdfDistanceBBoxPass pass(gg);
-        DfSink<SdfDistanceBBoxPass> sink(pass);
-        const Xform id = Xform::identity();
+    else { // MTSDF: RGB from MSDF + A from true SDF
+        {
+            MsdfDistanceBBoxPass pass(gg);
+            DfSink<MsdfDistanceBBoxPass> sink(pass);
+            const Xform id = Xform::identity();
 
-        if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
-            return false;
+            if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
+                return false;
+        }
+        {
+            SdfDistanceBBoxPass pass(gg);
+            DfSink<SdfDistanceBBoxPass> sink(pass);
+            const Xform id = Xform::identity();
+
+            if (!RunGlyfStream(gp.glyph_index, sink, id, spread, scratch, max_points))
+                return false;
+        }
     }
 
     // =====================================================================
@@ -1091,7 +1144,43 @@ inline bool Font::StreamDF(const GlyphPlan& gp,
                 p[2] = (uint8_t)(128 + sb);
             }
         }
-    } else {
+    }
+    else if (mode == DfMode::MTSDF) {
+        for (int y=0; y<h; ++y) {
+            uint8_t* row = gg.out + (uint32_t)(gg.shift_y + y) * gg.out_stride
+                                  + (uint32_t)gg.shift_x * 4u;
+
+            for (int x=0; x<w; ++x) {
+                const int idx = y*w + x;
+
+                const float nr = sqrt((float)gg.d2r[idx] * (1.f / 65535.f));
+                const float ng = sqrt((float)gg.d2g[idx] * (1.f / 65535.f));
+                const float nb = sqrt((float)gg.d2b[idx] * (1.f / 65535.f));
+
+                float na = sqrt((float)gg.d2[idx] * (1.f / 65535.f));
+                if (na > 1.f) na = 1.f;
+
+                int sr = (int)(nr * 127.f + .5f);
+                int sg = (int)(ng * 127.f + .5f);
+                int sb = (int)(nb * 127.f + .5f);
+                int sa = (int)(na * 127.f + .5f);
+
+                if (gg.inside[idx]) {
+                    sr = -sr;
+                    sg = -sg;
+                    sb = -sb;
+                    sa = -sa;
+                }
+
+                uint8_t* p = row + (uint32_t)x * 4u;
+                p[0] = (uint8_t)(128 + sr);
+                p[1] = (uint8_t)(128 + sg);
+                p[2] = (uint8_t)(128 + sb);
+                p[3] = (uint8_t)(128 + sa);
+            }
+        }
+    }
+    else /* SDF */ {
         for (int y=0; y<h; ++y) {
             uint8_t* row = gg.out + (uint32_t)(gg.shift_y + y) * gg.out_stride
                          + (uint32_t)gg.shift_x;
@@ -1109,7 +1198,7 @@ inline bool Font::StreamDF(const GlyphPlan& gp,
             }
         }
     }
-    return true;
+return true;
 }
 
 inline size_t Font::PlanBytes(const PlanInput& in) const noexcept {
@@ -1316,7 +1405,8 @@ inline bool Font::Build(const FontPlan& plan,
     if (!plan._glyphs || !plan._scratch_mem) return false;
     if (!plan.atlas_side || !plan.glyph_count) return false;
 
-    const uint32_t comp = (plan.mode == DfMode::MSDF) ? 3u : 1u;
+    const uint32_t comp = plan.mode==DfMode::SDF ? 1u :
+                          plan.mode==DfMode::MSDF ? 3u : 4u;
     if (atlas_stride_bytes < (uint32_t)plan.atlas_side * comp)
         return false;
 
