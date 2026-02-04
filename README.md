@@ -6,16 +6,17 @@ The main goals:
 
 - **Freestanding-first**: build without the C runtime (CRT) and without the C++ standard library, when you choose.
 - **Readable C++**: restructure and rename internals into small, typed helpers instead of macro-heavy C.
-- **Header-only**: each module remains a single public header (`.hpp`) with optional `detail/` integration headers.
+- **Header-only**: each module remains a single public header (`.hpp`) with OPTIONAL`detail/` integration headers.
 - **Strict tests**: Catch2 byte-diff tests compare outputs against the original stb headers where it makes sense.
 
-> **Security note (stb_truetype)**: like the original, this code is not designed to safely parse untrusted font files. Do not use it on hostile input.
+> **Security note (stb_truetype, stb_truetype_stream)**: like the original, this code is not designed to safely parse untrusted font files. Do not use it on hostile input.
 
 ## What’s inside
 
-- `stb_truetype/` — freestanding C++ rewrite based on `stb_truetype.h` (v1.26).  
-  Public header: `stb_truetype.hpp`
-- `stb_image_write/` — freestanding C++ rewrite based on `stb_image_write.h`.  
+- `stb_truetype/` — freestanding C++ rewrite based on `stb_truetype.h` (v1.26). Rasterizer as original.
+- `stb_truetype_stream/` — freestanding C++ library based on `stb_truetype.h`. Stream in this context means that no memory allocations occur inside the lib. Generates SDF, MSDF, MTSDF atlases with skylines.
+  Public headers: `stb_truetype.hpp, `stb_truetype_stream.hpp`.
+- `stb_image_write/` — freestanding C++ rewrite based on `stb_image_write.hpp`.  
   Public header: `stb_image_write.hpp`
 - `stb_image/` — wrapper/rewrite work-in-progress (currently minimal).
 - `stb_image_resize2/` — header-only resize (currently minimal/WIP).
@@ -27,7 +28,7 @@ In freestanding mode, you usually don’t have `malloc/free/memcpy/memset/strlen
 Instead of pulling the standard library, each module includes a small `detail/*_integration.hpp`
 that defines (or lets you override) the required primitives.
 
-- Define `STBTT_FREESTANDING` to enable freestanding mode in `stb_truetype.hpp`
+- Define `STBTT_FREESTANDING` to enable freestanding mode in `stb_truetype.hpp` (stream version doesn't depend on any of lib C functions, so no need for this macro if you use stb_truetype_stream.hpp)
 - Define `STBIW_FREESTANDING` to enable freestanding mode in `stb_image_write.hpp`
 
 You can override any of the hooks with your own platform/engine functions.
