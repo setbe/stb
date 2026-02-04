@@ -1,5 +1,5 @@
 #define STBIR_FREESTANDING
-#include "stb_image_resize2.hpp"
+#include "../stb_image_resize2/stb_image_resize2.hpp"
 
 #ifdef _WIN32
 #include <windows.h>

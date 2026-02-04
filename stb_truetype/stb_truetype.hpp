@@ -80,7 +80,7 @@ SOFTWARE.
 //      STBTT_memset
 
 #ifdef STBTT_FREESTANDING
-#   include "stbtt/detail/math_integration.hpp"
+#   include "detail/math_integration.hpp"
 #else // !STBTT_FREESTANDING
     // ---------- math functions -----------
 #   ifndef STBTT_ifloor             
@@ -109,7 +109,7 @@ SOFTWARE.
 #endif // !STBTT_FREESTANDING
 
 #ifdef STBTT_FREESTANDING
-#   include "stbtt/detail/libc_integration.hpp"
+#   include "detail/libc_integration.hpp"
 #else
     // ---------- libC functions -----------
 #   include <stdlib.h>
@@ -132,10 +132,10 @@ SOFTWARE.
 #endif // ifndef STBTT_FREESTANDING
 
 
-#include "stbtt/detail/enums.hpp"
-#include "stbtt/detail/cff_parser.hpp"
-#include "stbtt/detail/edges.hpp"
-#include "stbtt/detail/raster_scratch.hpp"
+#include "detail/enums.hpp"
+#include "detail/cff_parser.hpp"
+#include "detail/edges.hpp"
+#include "detail/raster_scratch.hpp"
 
 
 namespace stbtt {

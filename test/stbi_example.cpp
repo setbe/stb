@@ -1,5 +1,5 @@
-#define STBIW_FREESTANDING
-#include "stb_image_write.h"
+#define STBI_FREESTANDING
+#include "../stb_image/stb_image.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -32,7 +32,7 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
     wc.lpszClassName = "TTWin";
     RegisterClassA(&wc);
 
-    HWND win = CreateWindowA("TTWin", "Image Writer",
+    HWND win = CreateWindowA("TTWin", "Image Viewer",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 400, 400,
         0, 0, h, 0);
 
@@ -47,4 +47,5 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
 #else // defined CONSOLE
 # error "This test runs in NoConsole mode only"
 #endif
+
 #endif // ifdef _WIN32

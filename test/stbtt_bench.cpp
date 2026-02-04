@@ -226,18 +226,18 @@ namespace stbtt_bench {
 
 } // namespace stbtt_bench
 
-// Bind allocator hooks for your port:
+// Bind allocator hooks for port:
 #define STBTT_malloc(sz,u) stbtt_bench::tt_malloc((sz),(u))
 #define STBTT_free(p,u)    stbtt_bench::tt_free((p),(u))
 
-// Your fork
-#include "stbtt/stb_truetype.hpp"
+// Fork
+#include "../stb_truetype/stb_truetype.hpp"
 
 // Reference stb (optional)
 #ifndef STBTT_BENCH_NO_REFERENCE
 #   define STB_TRUETYPE_IMPLEMENTATION
 #   define STBTT_STATIC
-#   include "stbtt/stb_truetype.h"
+#   include "../stb_truetype/stb_truetype.h"
 #endif
 
 // ---------------- Prep + Bench (PORT) ----------------

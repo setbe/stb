@@ -1,36 +1,52 @@
+
+
+
 cmake_minimum_required(VERSION 3.22)
 
+# ---------------------------------------------------------------------------
+# Custom configs for Visual Studio (must be BEFORE project())
+# NOTE: Don't use if(MSVC) here, MSVC is not known yet.
+# ---------------------------------------------------------------------------
+set(STB_CUSTOM_CONFIGS "ReleaseMini;ReleaseNoConsole;ReleaseMiniNoConsole")
+
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    set(CMAKE_CONFIGURATION_TYPES
+        "Debug;Release;${STB_CUSTOM_CONFIGS}"
+        CACHE STRING "Available build configurations" FORCE
+    )
+endif()
+
 project(freestanding_stb LANGUAGES CXX)
+
+# ---------------------------------------------------------------------------
+# Seed missing per-config flag variables (must be AFTER project())
+# to avoid: CMAKE_EXE_LINKER_FLAGS_<CFG> not set
+# ---------------------------------------------------------------------------
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    foreach(cfg IN ITEMS ReleaseMini ReleaseNoConsole ReleaseMiniNoConsole)
+        string(TOUPPER "${cfg}" CFGU)
+
+        foreach(var IN ITEMS
+            CMAKE_C_FLAGS
+            CMAKE_CXX_FLAGS
+            CMAKE_EXE_LINKER_FLAGS
+            CMAKE_SHARED_LINKER_FLAGS
+            CMAKE_MODULE_LINKER_FLAGS
+        )
+            # If not defined, copy from Release as baseline.
+            if(NOT DEFINED ${var}_${CFGU})
+                set(${var}_${CFGU} "${${var}_RELEASE}" CACHE STRING "" FORCE)
+            endif()
+        endforeach()
+    endforeach()
+endif()
+
 
 # -----------------------------------------------------------------------------
 # Options
 # -----------------------------------------------------------------------------
 option(LEGACY_CPP14 "Use legacy C++14 compiler (default ON)" ON)
 option(BUILD_SHARED_LIBS "Build shared libs" OFF)
-
-# -----------------------------------------------------------------------------
-# Build configurations (MSVC multi-config generators)
-# -----------------------------------------------------------------------------
-if(MSVC)
-    set(_default_configs "Debug;Release;ReleaseMini;ReleaseNoConsole;ReleaseMiniNoConsole")
-
-    if(CMAKE_CONFIGURATION_TYPES)
-        # Multi-config generator (Visual Studio, Xcode)
-        list(APPEND CMAKE_CONFIGURATION_TYPES "ReleaseMini" "ReleaseNoConsole" "ReleaseMiniNoConsole")
-        list(REMOVE_DUPLICATES CMAKE_CONFIGURATION_TYPES)
-        set(CMAKE_CONFIGURATION_TYPES "${CMAKE_CONFIGURATION_TYPES}" CACHE STRING "Available build configurations" FORCE)
-    else()
-        # Single-config generator (Ninja, Makefiles)
-        # (CMAKE_BUILD_TYPE is selected manually: -DCMAKE_BUILD_TYPE=ReleaseMini)
-        set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
-        set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS ${_default_configs})
-    endif()
-
-    # Default Win32 for VS
-    if(NOT DEFINED CMAKE_GENERATOR_PLATFORM)
-        set(CMAKE_GENERATOR_PLATFORM "Win32" CACHE STRING "Platform for Visual Studio" FORCE)
-    endif()
-endif()
 
 # -----------------------------------------------------------------------------
 # Language standard
@@ -72,7 +88,9 @@ set(msvc_freestanding_base
     "/GR-"
     "/Zl"
     "/Zc:threadSafeInit-"
-    "/Oi-"     # essential for freestanding (disable intrinsics)
+    "/Oi-"     # disable intrinsics (essential for freestanding)
+    "/EHs-"  # disable C++ exceptions (no unwind tables)
+    "/EHc-"    # no extern "C" unwind
     "/Gm-"
     "/Gy"
     "/Zc:inline"
@@ -82,6 +100,7 @@ set(msvc_freestanding_base
     "/errorReport:none"
     "/WX-"
     "/D;NDEBUG"
+    "/D_HAS_EXCEPTIONS=0"
 )
 
 # Freestanding "full" (ReleaseNoConsole)
@@ -151,7 +170,7 @@ set(PROJECT_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/src/include")
 # -----------------------------------------------------------------------------
 # Functions
 # -----------------------------------------------------------------------------
-function(io_apply_common target)
+function(stb_apply_common target)
     target_include_directories(${target} PRIVATE
         $<BUILD_INTERFACE:${PROJECT_INCLUDE_DIR}>
     )
@@ -167,7 +186,7 @@ function(io_apply_common target)
     )
 endfunction()
 
-function(io_apply_freestanding target)
+function(stb_apply_freestanding target)
     # MSVC: apply ONLY for freestanding configs
     target_compile_options(${target} PRIVATE
         $<$<AND:$<CXX_COMPILER_ID:MSVC>,${_GE_FREESTANDING}>:${msvc_freestanding_base}>
@@ -201,14 +220,14 @@ function(io_apply_freestanding target)
     endif()
 endfunction()
 
-function(io_apply_debug target)
+function(stb_apply_debug target)
     target_compile_options(${target} PRIVATE
         $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:${msvc_debug_compile}>
         $<$<AND:$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>,$<CONFIG:Debug>>:${unix_debug_compile}>
     )
 endfunction()
 
-function(io_no_console target)
+function(stb_no_console target)
     if(MSVC)
         target_link_options(${target} PRIVATE
             $<$<CONFIG:ReleaseNoConsole>:/SUBSYSTEM:WINDOWS>
@@ -219,7 +238,7 @@ function(io_no_console target)
     endif()
 endfunction()
 
-function(io_add_header_only name)
+function(stb_add_header_only name)
     add_library(${name} INTERFACE)
     target_include_directories(${name} INTERFACE
         $<BUILD_INTERFACE:${PROJECT_INCLUDE_DIR}>
@@ -228,15 +247,15 @@ function(io_add_header_only name)
     target_sources(${name} INTERFACE ${ARGN})
 endfunction()
 
-function(io_add_test_exe name)
-    # usage: io_add_test_exe(target cpp_file [headers...])
+function(stb_add_test_exe name)
+    # usage: stb_add_test_exe(target cpp_file [headers...])
     set(options)
     set(oneValueArgs CPP)
     set(multiValueArgs HEADERS LIBS)
     cmake_parse_arguments(T "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     add_executable(${name} ${T_CPP} ${T_HEADERS})
-    io_no_console(${name})
+    stb_no_console(${name})
 
     # CONSOLE define only for configs where it set
     target_compile_definitions(${name} PRIVATE
@@ -247,64 +266,117 @@ function(io_add_test_exe name)
         target_link_libraries(${name} PRIVATE ${T_LIBS})
     endif()
 
-    io_apply_common(${name})
-    io_apply_freestanding(${name})
-    io_apply_debug(${name})
+    stb_apply_common(${name})
+    stb_apply_freestanding(${name})
+    stb_apply_debug(${name})
 endfunction()
 
 # -----------------------------------------------------------------------------
 # Sources
 # -----------------------------------------------------------------------------
-set(SOURCES_TRUETYPE
-    "src/include/stbtt/stb_truetype.hpp"
-    "src/include/stbtt/detail/cff_parser.hpp"
-    "src/include/stbtt/detail/edges.hpp"
-    "src/include/stbtt/detail/enums.hpp"
-    "src/include/stbtt/detail/math_integration.hpp"
-    "src/include/stbtt/detail/libc_integration.hpp"
-    "src/include/stbtt/detail/raster_scratch.hpp"
-)
 
+# truetype
+set(SOURCES_TRUETYPE
+    "stb_truetype/stb_truetype.hpp"
+    "stb_truetype/detail/enums.hpp"
+    "stb_truetype/detail/cff_parser.hpp"
+    "stb_truetype/detail/edges.hpp"
+    "stb_truetype/detail/raster_scratch.hpp"
+    "stb_truetype/detail/math_integration.hpp"
+    "stb_truetype/detail/libc_integration.hpp"
+)
 set(SOURCES_TRUETYPE_CATCH
     ${SOURCES_TRUETYPE}
-    "src/include/stbtt/stb_truetype.h"   # original for byte-diff tests
+    "stb_truetype/stb_truetype.h"   # original for byte-diff tests
 )
 
-set(SOURCES_IMAGE         "src/include/stb_image.hpp")
-set(SOURCES_IMAGE_WRITE   "src/include/stb_image_write.hpp")
-set(SOURCES_IMAGE_RESIZE2 "src/include/stb_image_resize2.hpp")
+# truetype stream
+set(SOURCES_TRUETYPE_STREAM
+    "stb_truetype_stream/stb_truetype_stream.hpp"
+
+    "stb_truetype_stream/codepoints/stbtt_codepoints.hpp"
+    "stb_truetype_stream/codepoints/stbtt_codepoints_stream.hpp"
+
+    "stb_truetype_stream/codepoints/script/arabic.hpp"
+    "stb_truetype_stream/codepoints/script/cjk.hpp"
+    "stb_truetype_stream/codepoints/script/cyrillic.hpp"
+    "stb_truetype_stream/codepoints/script/devanagari.hpp"
+    "stb_truetype_stream/codepoints/script/greek.hpp"
+    "stb_truetype_stream/codepoints/script/hebrew.hpp"
+    "stb_truetype_stream/codepoints/script/jouyou_kanji.hpp"
+    "stb_truetype_stream/codepoints/script/kana.hpp"
+    "stb_truetype_stream/codepoints/script/latin.hpp"
+)
+
+# image
+set(SOURCES_IMAGE         "stb_image/stb_image.hpp")
+
+# image write
+set(SOURCES_IMAGE_WRITE
+    "stb_image_write/stb_image_write.hpp"
+    "stb_image_write/detail/libc_integration.hpp"
+    "stb_image_write/detail/zlib.hpp")
+set(SOURCES_IMAGE_WRITE_CATCH
+    ${SOURCES_IMAGE_WRITE}
+    "stb_image_write/stb_image_write.h"   # original for byte-diff tests
+)
+
+# image resize
+set(SOURCES_IMAGE_RESIZE2 "stb_image_resize2/stb_image_resize2.hpp")
 
 # -----------------------------------------------------------------------------
 # Header-only interface targets
 # -----------------------------------------------------------------------------
-io_add_header_only(truetype      ${SOURCES_TRUETYPE})
-io_add_header_only(image         ${SOURCES_IMAGE})
-io_add_header_only(image_write   ${SOURCES_IMAGE_WRITE})
-io_add_header_only(image_resize2 ${SOURCES_IMAGE_RESIZE2})
+stb_add_header_only(truetype        ${SOURCES_TRUETYPE})
+stb_add_header_only(truetype_stream ${SOURCES_TRUETYPE_STREAM})
+stb_add_header_only(image           ${SOURCES_IMAGE})
+stb_add_header_only(image_write     ${SOURCES_IMAGE_WRITE})
+stb_add_header_only(image_resize2   ${SOURCES_IMAGE_RESIZE2})
 
 # -----------------------------------------------------------------------------
 # Freestanding examples
 # -----------------------------------------------------------------------------
-io_add_test_exe(tt_example
-    CPP "src/test/stbtt_example.cpp"
+
+# truetype
+stb_add_test_exe(tt_example
+    CPP "test/stbtt_example.cpp"
     HEADERS ${SOURCES_TRUETYPE}
     LIBS truetype
 )
 
-io_add_test_exe(i_example
-    CPP "src/test/stbi_example.cpp"
+# truetype stream (one character)
+stb_add_test_exe(tt_stream_example
+    CPP "test/stbtt_stream_example.cpp"
+    HEADERS ${SOURCES_TRUETYPE_STREAM}
+    LIBS truetype_stream
+)
+
+# truetype stream (whole bitmap)
+stb_add_test_exe(tt_stream_bitmap_example
+    CPP "test/stbtt_stream_bitmap_example.cpp"
+    HEADERS ${SOURCES_TRUETYPE_STREAM}
+    LIBS truetype_stream
+         image_write
+)
+
+
+# image
+stb_add_test_exe(i_example
+    CPP "test/stbi_example.cpp"
     HEADERS ${SOURCES_IMAGE}
     LIBS image
 )
 
-io_add_test_exe(iw_example
-    CPP "src/test/stbiw_example.cpp"
+# image write
+stb_add_test_exe(iw_example
+    CPP "test/stbiw_example.cpp"
     HEADERS ${SOURCES_IMAGE_WRITE}
     LIBS image_write
 )
 
-io_add_test_exe(ir_example
-    CPP "src/test/stbir_example.cpp"
+# image resize
+stb_add_test_exe(ir_example
+    CPP "test/stbir_example.cpp"
     HEADERS ${SOURCES_IMAGE_RESIZE2}
     LIBS image_resize2
 )
@@ -312,14 +384,25 @@ io_add_test_exe(ir_example
 # -----------------------------------------------------------------------------
 # General tests
 # -----------------------------------------------------------------------------
-io_add_test_exe(tt_catch
-    CPP "src/test/stbtt_catch.cpp"
+
+# truetype
+stb_add_test_exe(tt_catch
+    CPP "test/stbtt_catch.cpp"
     HEADERS ${SOURCES_TRUETYPE_CATCH}
     LIBS truetype
 )
+stb_add_test_exe(tt_bench
+    CPP "test/stbtt_bench.cpp"
+)
 
-io_add_test_exe(tt_bench
-    CPP "src/test/stbtt_bench.cpp"
+# image write
+stb_add_test_exe(iw_catch
+    CPP "test/stbiw_catch.cpp"
+    HEADERS ${SOURCES_IMAGE_WRITE_CATCH}
+    LIBS image_write
+)
+stb_add_test_exe(iw_bench
+    CPP "test/stbiw_bench.cpp"
 )
 
 message(STATUS "Configured ${PROJECT_NAME} (C++${CMAKE_CXX_STANDARD})")
