@@ -1,7 +1,7 @@
 # stb_truetype_stream
 
 `stb_truetype_stream.hpp` is a freestanding-oriented fork of `stb_truetype`,
-designed for **SDF / MSDF generation with zero internal dynamic allocations** and
+designed for **SDF / MSDF / MTSDF generation with zero internal dynamic allocations** and
 **fully user-controlled memory**.
 
 The library follows a **streaming glyph processing model**:
@@ -63,6 +63,7 @@ It does **not** depend on anything in the `codepoints/` directory.
 - Generating:
   - **SDF** (single-channel signed distance field)
   - **MSDF** (multi-channel signed distance field)
+  - **MTSDF** (multi-channel true signed distance field)
 - Exposing a memory-explicit API
 
 ---
@@ -77,14 +78,14 @@ The **Plan** step answers:
 
 ```cpp
 PlanInput in{};
-in.mode = DfMode::SDF;          // or MSDF
+in.mode = DfMode::SDF;          // or MSDF/MTSDF
 in.pixel_height = 32;
 in.spread_px = 4.0f;
 in.codepoints = cps;
 in.codepoint_count = count;
 
 size_t bytes = font.PlanBytes(in);
-void* plan_mem = user_allocate(bytes);
+void* plan_mem = user_allocate(bytes); // your allocation
 
 FontPlan plan{};
 font.Plan(in, plan_mem, bytes, plan);
@@ -104,7 +105,7 @@ No rendering happens here.
 
 ### Pass 2: Build
 
-The **Build** step performs actual SDF/MSDF generation.
+The **Build** step performs actual SDF/MSDF/MTSDF generation.
 
 ```cpp
 uint8_t* atlas = user_allocate(plan.atlas_side * plan.atlas_side * components);
@@ -126,7 +127,7 @@ No allocations occur.
 
 You can bypass the atlas system and stream **one glyph directly** into a buffer.
 
-Useful for debugging, tools, or dynamic rendering.
+Useful for debugging, tools, or dynamic rendering. BUT be aware that glyph could possibly be larger than your buffer.
 
 ```cpp
 font.StreamDF(
@@ -260,7 +261,7 @@ allocate atlas bitmap
    ↓
 Font::Build
    ↓
-SDF / MSDF bitmap ready
+SDF / MSDF / MTSDF bitmap ready
 ```
 
 Key properties:
@@ -317,7 +318,7 @@ It is intentionally low-level.
 ## Typical Use Cases
 
 - Custom GUI libraries
-- Game engines (SDF/MSDF text rendering)
+- Game engines (SDF/MSDF/MTSDF text rendering)
 - Asset pipelines
 - Tools and font preprocessors
 - Freestanding or CRT-free environments
