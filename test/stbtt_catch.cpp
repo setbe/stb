@@ -182,7 +182,7 @@ namespace stbtt_test {
     }
 
     static std::vector<std::string> default_font_candidates() {
-        // Try to pick “normal” fonts first (avoid symbol fonts).
+        // Try to pick ï¿½normalï¿½ fonts first (avoid symbol fonts).
         return {
     #if defined(_WIN32)
             "C:\\Windows\\Fonts\\arial.ttf",
@@ -201,6 +201,12 @@ namespace stbtt_test {
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
             "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
             "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu-serif-fonts/DejaVuSerif.ttf",
+            "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+            "/usr/share/fonts/google-noto-sans/NotoSans-Regular.ttf",
     #endif
         };
     }
@@ -325,7 +331,7 @@ TEST_CASE("stbtt::TrueType - ReadBytes + basic invariants", "[stbtt][basic]") {
     REQUIRE(s12 > 0.0f);
     REQUIRE(s24 > s12);
 
-    // A few common codepoints (these should exist for “normal” fonts)
+    // A few common codepoints (these should exist for ï¿½normalï¿½ fonts)
     const int cps[] = { 'A', 'B', 'a', 'b', '0', '1', '.', ',', ' ' };
     for (int cp : cps) {
         int g = tt.FindGlyphIndex(cp);
@@ -666,7 +672,7 @@ TEST_CASE("CFF(Type2)/cubic stress", "[stbtt][cff][optional]") {
         std::vector<std::uint8_t> bmp(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0);
         tt.MakeGlyphBitmap(bmp.data(), g, w, h, w, sc, sc, 0.25f, 0.25f);
 
-        // Ensure not all zeros for a “real” glyph
+        // Ensure not all zeros for a ï¿½realï¿½ glyph
         std::size_t sum = 0;
         for (auto v : bmp) sum += v;
         if (cp != ' ') REQUIRE(sum > 0);

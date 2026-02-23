@@ -22,6 +22,38 @@
       "cacheVariables": {
         "LEGACY_CPP14": "ON"
       }
+    },
+
+    {
+      "name": "l",
+      "displayName": "Linux x64",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/l",
+      "cacheVariables": { "LEGACY_CPP14": "ON" }
+    },
+    {
+      "name": "l32",
+      "displayName": "Linux x86 (32-bit)",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/l32",
+      "cacheVariables": {
+        "LEGACY_CPP14": "ON",
+        "CMAKE_CXX_FLAGS": "-m32",
+        "CMAKE_EXE_LINKER_FLAGS": "-m32"
+      }
     }
+  ],
+  "buildPresets": [
+    { "name": "l-d",        "configurePreset": "l",   "configuration": "Debug" },
+    { "name": "l-rel",      "configurePreset": "l",   "configuration": "Release" },
+    { "name": "l-mini",     "configurePreset": "l",   "configuration": "ReleaseMini" },
+    { "name": "l-gui",      "configurePreset": "l",   "configuration": "ReleaseNoConsole" },
+    { "name": "l-minigui",  "configurePreset": "l",   "configuration": "ReleaseMiniNoConsole" },
+
+    { "name": "l32-d",        "configurePreset": "l32", "configuration": "Debug" },
+    { "name": "l32-rel",      "configurePreset": "l32", "configuration": "Release" },
+    { "name": "l32-mini",     "configurePreset": "l32", "configuration": "ReleaseMini" },
+    { "name": "l32-gui",      "configurePreset": "l32", "configuration": "ReleaseNoConsole" },
+    { "name": "l32-minigui",  "configurePreset": "l32", "configuration": "ReleaseMiniNoConsole" }
   ]
 }
