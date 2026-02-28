@@ -258,31 +258,6 @@ struct PlanInput {
     const uint32_t* codepoints;
     uint32_t        codepoint_count;
 };
-struct Xform {
-    // [ m00 m01 dx ]
-    // [ m10 m11 dy ]
-    float m00{1.f}, m01{0.f};
-    float m10{0.f}, m11{1.f};
-    float dx{0.f}, dy{0.f};
-
-    static inline Xform identity() noexcept { return{}; }
-};
-static inline void xform_apply(const Xform& xf, float x, float y, float& ox, float& oy) noexcept {
-    ox = xf.m00 * x + xf.m01 * y + xf.dx;
-    oy = xf.m10 * x + xf.m11 * y + xf.dy;
-}
-// child = parent ∘ local  (apply local, then parent)
-static inline Xform xform_compose(const Xform& parent, const Xform& local) noexcept {
-    Xform r;
-    r.m00 = parent.m00 * local.m00 + parent.m01 * local.m10;
-    r.m01 = parent.m00 * local.m01 + parent.m01 * local.m11;
-    r.m10 = parent.m10 * local.m00 + parent.m11 * local.m10;
-    r.m11 = parent.m10 * local.m01 + parent.m11 * local.m11;
-
-    r.dx = parent.m00 * local.dx + parent.m01 * local.dy + parent.dx;
-    r.dy = parent.m10 * local.dx + parent.m11 * local.dy + parent.dy;
-    return r;
-}
 // A "view" onto one user-provided memory block.
 // User never allocates glyphs/nodes/scratch separately.
 struct FontPlan {
@@ -383,6 +358,57 @@ static inline size_t plan_block_bytes(uint32_t glyph_count, uint32_t node_cap,
     off = aup(off, 16); off += scratch_bytes;
     return aup(off, 16);
 }
+struct Xform {
+    // [ m00 m01 dx ]
+    // [ m10 m11 dy ]
+    float m00{ 1.f }, m01{ 0.f };
+    float m10{ 0.f }, m11{ 1.f };
+    float dx{ 0.f }, dy{ 0.f };
+
+    inline void apply(float x, float y, float& ox, float& oy) const noexcept {
+        ox = m00 * x + m01 * y + dx;
+        oy = m10 * x + m11 * y + dy;
+    }
+    // child = parent ∘ local  (apply local, then parent)
+    static inline Xform compose(const Xform& parent, const Xform& local) noexcept {
+        Xform r;
+        r.m00 = parent.m00 * local.m00 + parent.m01 * local.m10;
+        r.m01 = parent.m00 * local.m01 + parent.m01 * local.m11;
+        r.m10 = parent.m10 * local.m00 + parent.m11 * local.m10;
+        r.m11 = parent.m10 * local.m01 + parent.m11 * local.m11;
+
+        r.dx = parent.m00 * local.dx + parent.m01 * local.dy + parent.dx;
+        r.dy = parent.m10 * local.dx + parent.m11 * local.dy + parent.dy;
+        return r;
+    }
+
+    static inline Xform identity() noexcept { return{}; }
+
+    template<class SinkT> inline void emit_move(SinkT& sink, float x0, float y0) const noexcept {
+        float tx, ty; apply(x0, y0, tx, ty);
+        sink.move(tx, ty);
+    };
+
+    template<class SinkT> inline void emit_line(SinkT& sink, float x0, float y0) const noexcept {
+        float tx, ty; apply(x0, y0, tx, ty);
+        sink.line(tx, ty);
+    };
+    template<class SinkT> inline void emit_quad(SinkT& sink, float cx, float cy, float x1, float y1) const noexcept {
+        float tcx, tcy, tx, ty;
+        apply(cx, cy, tcx, tcy);
+        apply(x1, y1, tx, ty);
+        sink.quad(tcx, tcy, tx, ty);
+    };
+    template<class SinkT> inline void emit_cubic(SinkT& sink, float cx1, float cy1, float cx2, float cy2, float x1, float y1) const noexcept {
+        float tcx1, tcy1, tcx2, tcy2, tx, ty;
+        apply(cx1, cy1, tcx1, tcy1);
+        apply(cx2, cy2, tcx2, tcy2);
+        apply(x1, y1, tx, ty);
+        sink.cubic(tcx1, tcy1, tcx2, tcy2, tx, ty);
+    };
+};
+
+
 // Basic Newton-Raphson sqrt approximation
 static inline float sqrt(float x) noexcept {
     if (x<=0) return 0;
@@ -937,6 +963,10 @@ private:
     template<class SinkT>
     bool RunGlyfStream(int glyph_index, SinkT& sink, const Xform& xf, float spread,
                         GlyphScratch& scratch, uint16_t max_points) noexcept;
+    template<class SinkT>
+    static void EmitContour(SinkT& sink, const Xform& xf,
+                             const uint8_t* flags, const int16_t* px, const int16_t* py,
+                             uint16_t s, uint16_t end, uint8_t& col) noexcept;
 
     // --- Parsing helpers ---
     inline int GetGlyfOffset(int glyph_index) const noexcept;
@@ -1475,6 +1505,103 @@ struct VisitGuard {
     inline bool ok() const noexcept { return pushed; }
 };
 
+
+template<class SinkT>
+static void Font::EmitContour(SinkT& sink, const Xform& xf,
+                        const uint8_t* flags, const int16_t* px, const int16_t* py,
+                        uint16_t s, uint16_t end, uint8_t& col) noexcept {
+    // store start position to close correctly
+    float startx, starty;
+    {
+        uint16_t first = s, last = end;
+        if      (is_on_(flags[first])) { startx=(float)px[first]; starty=(float)py[first]; }
+        else if (is_on_(flags[last]))  { startx=(float)px[last];  starty=(float)py[last]; }
+        else {
+            startx = 0.5f*((float)px[ last ] + (float)px[ first ]); 
+            starty = 0.5f*((float)py[ last ] + (float)py[ first ]);
+        }
+    }
+    // ---- choose start point P0 (must be on-curve in param space) ----
+    uint16_t first = s;
+    uint16_t last = end;
+
+    float P0x, P0y;        // current pen position in font units
+    float Cx = 0, Cy = 0;  // pending control point
+    bool  hasC = false;
+
+    if (is_on_(flags[ first ])) {
+        P0x = (float)px[ first ];
+        P0y = (float)py[ first ];
+    }
+    else {
+        // start is off-curve: start point is either last on-curve, or midpoint(lastOff, firstOff)
+        if (is_on_(flags[ last ])) {
+            P0x = (float)px[ last ];
+            P0y = (float)py[ last ];
+        }
+        else {
+            P0x = 0.5f * ((float)px[ last ] + (float)px[ first ]);
+            P0y = 0.5f * ((float)py[ last ] + (float)py[ first ]);
+        }
+        // also treat first off-curve as pending control for the next segment
+        Cx = (float)px[ first ];
+        Cy = (float)py[ first ];
+        hasC = true;
+    }
+
+    xf.emit_move(sink, P0x, P0y);
+
+    // iterate points starting AFTER first
+    uint16_t i = first;
+    while (true) {
+        uint16_t j = (i==end) ? s : (uint16_t)(i+1);
+        if (j == first) break; // completed loop back to start index
+
+        float jx = (float)px[ j ],
+              jy = (float)py[ j ];
+
+        if (is_on_(flags[j])) {
+            sink.set_edge_color(col);
+            if (hasC) {
+                xf.emit_quad(sink, Cx, Cy, jx, jy);
+                hasC = false;
+            }
+            else {
+                xf.emit_line(sink, jx, jy);
+            }
+            col = (uint8_t)((col+1) % 3);
+            P0x = jx; P0y = jy;
+        }
+        else {
+            if (hasC) {
+                // off-off: insert implicit on at midpoint M between C and j
+                float mx = 0.5f * (Cx + jx);
+                float my = 0.5f * (Cy + jy);
+                sink.set_edge_color(col);
+                xf.emit_quad(sink, Cx, Cy, mx, my);
+                col = (uint8_t)((col+1) % 3);
+                P0x = mx; P0y = my;
+                // keep j as next pending control
+                Cx = jx; Cy = jy;
+                hasC = true;
+            }
+            else {
+                // first off after on: just store control
+                Cx = jx; Cy = jy;
+                hasC = true;
+            }
+        }
+
+        i = j;
+    }
+
+    // finish back to start point
+    sink.set_edge_color(col);
+    if (hasC) xf.emit_quad(sink, Cx,Cy, startx,starty);
+    else      xf.emit_line(sink, startx,starty);
+    col = (uint8_t)((col+1) % 3);
+}
+
 template<class SinkT>
 bool Font::RunGlyfStream(int glyph_index,
                          SinkT& sink,
@@ -1498,10 +1625,14 @@ bool Font::RunGlyfStream(int glyph_index,
             : _glyf +      (uint32_t)ulong_ (_data+_loca + 4*g);
     };
 
-    const uint8_t* g = _data + glyph_offset(glyph_index);
+    const uint8_t* g = _data + (_index_to_loc_format == 0 ?
+              _glyf + 2u * (uint32_t)ushort_(_data+_loca + glyph_index * 2)
+            : _glyf +      (uint32_t)ulong_ (_data+_loca + glyph_index * 4));
     {
         const uint32_t g0 = static_cast<uint32_t>(g - _data);
-        const uint32_t g1 = glyph_offset(glyph_index + 1);
+        const uint32_t g1 = (_index_to_loc_format == 0 ?
+              _glyf + 2u * (uint32_t)ushort_(_data+_loca + (glyph_index+1) * 2)
+            : _glyf +      (uint32_t)ulong_ (_data+_loca + (glyph_index+1) * 4));
         if (g0 == g1)
             return false; // empty glyph
     } 
@@ -1579,109 +1710,9 @@ bool Font::RunGlyfStream(int glyph_index,
             py[i] = (int16_t)y;
         }
 
-        // small helper to emit transformed points
-        auto emit_move = [&](float x0, float y0) noexcept {
-            float tx, ty; xform_apply(xf, x0, y0, tx, ty);
-            sink.move(tx, ty);
-        };
-        auto emit_line = [&](float x0, float y0) noexcept {
-            float tx, ty; xform_apply(xf, x0, y0, tx, ty);
-            sink.line(tx, ty);
-        };
-        auto emit_quad = [&](float cx, float cy, float x1, float y1) noexcept {
-            float tcx, tcy, tx, ty;
-            xform_apply(xf, cx, cy, tcx, tcy);
-            xform_apply(xf, x1, y1, tx, ty);
-            sink.quad(tcx, tcy, tx, ty);
-        };
-        auto emit_cubic = [&](float cx1, float cy1, float cx2, float cy2, float x1, float y1) noexcept {
-            float tcx1,tcy1, tcx2,tcy2, tx,ty;
-            xform_apply(xf, cx1, cy1, tcx1, tcy1);
-            xform_apply(xf, cx2, cy2, tcx2, tcy2);
-            xform_apply(xf, x1,  y1,  tx,  ty);
-            sink.cubic(tcx1, tcy1, tcx2, tcy2, tx, ty);
-        };
-
         // --- emit contours ---
         uint16_t start = 0;
         uint8_t col = 0;
-        auto next_col = [&]{ col = (uint8_t)((col+1) % 3); };
-        auto emit_contour = [&](uint16_t s, uint16_t end) noexcept {
-            auto at = [&](uint16_t idx)->uint16_t { return (idx==end) ? s : (uint16_t)(idx+1); };
-                
-            auto X = [&](uint16_t idx)->float { return (float)px[idx]; };
-            auto Y = [&](uint16_t idx)->float { return (float)py[idx]; };
-            auto ON = [&](uint16_t idx)->bool { return is_on_(flags[idx]); };
-                
-            // ---- choose start point P0 (must be on-curve in param space) ----
-            uint16_t first = s;
-            uint16_t last  = end;
-                
-            float P0x, P0y;        // current pen position in font units
-            float Cx=0, Cy=0;      // pending control point
-            bool  hasC=false;
-                
-            if (ON(first)) {
-                P0x = X(first); P0y = Y(first);
-            } else {
-                // start is off-curve: start point is either last on-curve, or midpoint(lastOff, firstOff)
-                if (ON(last)) {
-                    P0x = X(last); P0y = Y(last);
-                } else {
-                    P0x = 0.5f*(X(last)+X(first));
-                    P0y = 0.5f*(Y(last)+Y(first));
-                }
-                // also treat first off-curve as pending control for the next segment
-                Cx = X(first); Cy = Y(first);
-                hasC = true;
-            }
-        
-            emit_move(P0x, P0y);
-        
-            // iterate points starting AFTER first
-            uint16_t i = first;
-            while (true) {
-                uint16_t j = at(i);
-                if (j == first) break; // completed loop back to start index
-            
-                float jx = X(j), jy = Y(j);
-                bool  jon = ON(j);
-            
-                if (jon) {
-                    sink.set_edge_color(col);
-                    if (hasC) {
-                        emit_quad(Cx, Cy, jx, jy);
-                        hasC = false;
-                    } else {
-                        emit_line(jx, jy);
-                    }
-                    next_col();
-                    P0x = jx; P0y = jy;
-                } else {
-                    if (hasC) {
-                        // off-off: insert implicit on at midpoint M between C and j
-                        float mx = 0.5f*(Cx + jx);
-                        float my = 0.5f*(Cy + jy);
-                        sink.set_edge_color(col);
-                        emit_quad(Cx, Cy, mx, my);
-                        next_col();
-                        P0x = mx; P0y = my;
-                        // keep j as next pending control
-                        Cx = jx; Cy = jy;
-                        hasC = true;
-                    } else {
-                        // first off after on: just store control
-                        Cx = jx; Cy = jy;
-                        hasC = true;
-                    }
-                }
-            
-                i = j;
-            }
-        
-            // close contour to start point (Pstart = P0 at move time)
-            // We need the geometric start point (the pen at emit_move). Store it:
-        };
         
         // ---- call site per contour ----
         for (int c=0; c<ncontours; ++c) {
@@ -1689,70 +1720,11 @@ bool Font::RunGlyfStream(int glyph_index,
             const uint16_t end = ushort_(end_pts + 2*c);
             const uint16_t s   = start;
         
-            // store start position to close correctly
-            float startx, starty;
-            {
-                uint16_t first = s, last = end;
-                if (is_on_(flags[first])) { startx=(float)px[first]; starty=(float)py[first]; }
-                else if (is_on_(flags[last])) { startx=(float)px[last]; starty=(float)py[last]; }
-                else { startx=0.5f*((float)px[last]+(float)px[first]); starty=0.5f*((float)py[last]+(float)py[first]); }
-            }
-        
-            // emit contour with streaming normalisation
-            {
-                auto at = [&](uint16_t idx)->uint16_t { return (idx==end) ? s : (uint16_t)(idx+1); };
-                auto X  = [&](uint16_t idx)->float { return (float)px[idx]; };
-                auto Y  = [&](uint16_t idx)->float { return (float)py[idx]; };
-                auto ON = [&](uint16_t idx)->bool  { return is_on_(flags[idx]); };
-            
-                float Cx=0, Cy=0; bool hasC=false;
-            
-                // init pen
-                if (ON(s)) {
-                    emit_move(X(s), Y(s));
-                } else {
-                    uint16_t last = end;
-                    float sx = ON(last) ? X(last) : 0.5f*(X(last)+X(s));
-                    float sy = ON(last) ? Y(last) : 0.5f*(Y(last)+Y(s));
-                    emit_move(sx, sy);
-                    Cx = X(s); Cy = Y(s); hasC=true;
-                }
-            
-                uint16_t i = s;
-                while (true) {
-                    uint16_t j = at(i);
-                    if (j == s) break;
-                
-                    float jx=X(j), jy=Y(j);
-                    if (ON(j)) {
-                        sink.set_edge_color(col);
-                        if (hasC) {  emit_quad(Cx,Cy, jx,jy); hasC=false; }
-                        else      { emit_line(jx,jy); }
-                        next_col();
-                    } else {
-                        if (hasC) {
-                            float mx=0.5f*(Cx+jx), my=0.5f*(Cy+jy);
-                            sink.set_edge_color(col);
-                            emit_quad(Cx,Cy, mx,my);
-                            next_col();
-                            Cx=jx; Cy=jy; hasC=true;
-                        } else {
-                            Cx=jx; Cy=jy; hasC=true;
-                        }
-                    }
-                    i = j;
-                }
-            
-                // finish back to start point
-                sink.set_edge_color(col);
-                if (hasC) emit_quad(Cx,Cy, startx,starty);
-                else      emit_line(startx,starty);
-                next_col();
-            }
+            Font::EmitContour(sink, xf, flags, px, py, s, end, col);
         
             // do not call sink.close() if you already explicitly returned to start
             // (otherwise you may double-close)
-            start = (uint16_t)(end + 1);
+            start = (uint16_t)(end+1);
         }
     }
     // ------------------------------------------------------------
@@ -1813,7 +1785,7 @@ bool Font::RunGlyfStream(int glyph_index,
             }
 
             const Xform local{ a,b, c,d, e,f };
-            const Xform child = xform_compose(xf, local);
+            const Xform child = Xform::compose(xf, local);
 
             if (!RunGlyfStream((int)sub_glyf, sink, child, /*spread*/0.f, scratch, max_points))
                 return false;
