@@ -1,3 +1,5 @@
+// BUILD: Debug, Release. STD used, no freestanding.
+//
 // Compile as a single TU. Requires Catch2 single-header.
 // Optional: add original stb_truetype.h (v1.26) for strict byte-to-byte comparison.
 //

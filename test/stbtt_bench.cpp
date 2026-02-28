@@ -1,3 +1,5 @@
+// BUILD: Debug, Release. STD used, no freestanding.
+
 // Honest bench: warmup + render full ASCII [32..126] per iteration.
 
 #include <cstddef>

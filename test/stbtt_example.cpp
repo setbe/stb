@@ -1,3 +1,5 @@
+// BUILD (freestanding): Release MINI NoConsole (ReleaseMiniNoConsole)
+
 #define STBTT_FREESTANDING
 #include "../stb_truetype/stb_truetype.hpp"
 

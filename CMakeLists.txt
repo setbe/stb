@@ -268,15 +268,14 @@ endfunction()
 
 function(stb_no_console target)
     if(MSVC)
+        # `ReleaseNoConsole` and `ReleaseMiniNoConsole` are NOT the same here
         set_property(TARGET ${target} PROPERTY WIN32_EXECUTABLE
-          $<OR:$<CONFIG:ReleaseNoConsole>,$<CONFIG:ReleaseMiniNoConsole>>
+          $<CONFIG:ReleaseNoConsole>
         )
-        #target_link_options(${target} PRIVATE
-        #    $<$<CONFIG:ReleaseNoConsole>:/SUBSYSTEM:WINDOWS>
-        #    $<$<CONFIG:ReleaseNoConsole>:/ENTRY:WinMain>
-        #    $<$<CONFIG:ReleaseMiniNoConsole>:/SUBSYSTEM:WINDOWS>
-        #    $<$<CONFIG:ReleaseMiniNoConsole>:/ENTRY:WinMain>
-        #)
+        target_link_options(${target} PRIVATE
+            $<$<CONFIG:ReleaseMiniNoConsole>:/SUBSYSTEM:WINDOWS>
+            $<$<CONFIG:ReleaseMiniNoConsole>:/ENTRY:WinMain>
+        )
     endif()
 endfunction()
 

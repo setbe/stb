@@ -1,4 +1,6 @@
-﻿#include <windows.h>
+﻿// BUILD (freestanding): Release MINI NoConsole (ReleaseMiniNoConsole)
+
+#include <windows.h>
 #include <stdint.h>
 #include <stddef.h>
 

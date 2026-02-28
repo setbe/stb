@@ -1,4 +1,6 @@
-﻿#include <windows.h>
+﻿// BUILD (NOT freestanding): Release NoConsole (ReleaseNoConsole)
+
+#include <windows.h>
 #include <stdint.h>
 #include <stddef.h>
 
