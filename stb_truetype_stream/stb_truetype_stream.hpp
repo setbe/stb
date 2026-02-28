@@ -35,11 +35,8 @@ SOFTWARE.
 #include <stddef.h> // size_t
 #include <stdint.h> // uint32_t
 
-#if defined(_DEBUG) || !defined(NDEBUG)
-#   include <assert.h>
-#   define STBTT_assert(x) assert(x)
-#else
-#   define STBTT_assert
+#ifndef assert
+#   define assert
 #endif
 
 #ifndef STBTT_STREAM_MAX_XS
@@ -81,6 +78,108 @@ struct Skyline {
     int node_cap;
     uint16_t width;  // atlas side
 };
+static inline void skyline_init(Skyline& s, uint16_t width, SkylineNode* nodes, int cap) noexcept {
+    s.nodes = nodes;
+    s.node_cap = cap;
+    s.width = width;
+    s.node_count = 1;
+    s.nodes[0] = SkylineNode{ 0, 0, width };
+}
+static inline void skyline_merge(Skyline& s) noexcept {
+    for (int i = 0; i < s.node_count - 1; ) {
+        if (s.nodes[i].y == s.nodes[i + 1].y) {
+            s.nodes[i].w = (uint16_t)(s.nodes[i].w + s.nodes[i + 1].w);
+            for (int j = i + 1; j < s.node_count - 1; ++j) s.nodes[j] = s.nodes[j + 1];
+            --s.node_count;
+        }
+        else {
+            ++i;
+        }
+    }
+}
+// returns y if fits, else 0xFFFF
+static inline uint16_t skyline_fit(const Skyline& s, int idx, uint16_t rw, uint16_t rh) noexcept {
+    uint16_t x = s.nodes[idx].x;
+    if ((uint32_t)x + rw > s.width) return 0xFFFF;
+
+    uint16_t y = s.nodes[idx].y;
+    uint16_t width_left = rw;
+
+    int i = idx;
+    while (width_left > 0) {
+        if (i >= s.node_count) return 0xFFFF;
+        if (s.nodes[i].y > y) y = s.nodes[i].y;
+
+        if ((uint32_t)y + rh > s.width) return 0xFFFF; // defensive
+
+        if (s.nodes[i].w >= width_left) break;
+        width_left = (uint16_t)(width_left - s.nodes[i].w);
+        ++i;
+    }
+    return y;
+}
+static inline bool skyline_insert(Skyline& s, uint16_t rw, uint16_t rh, uint16_t& out_x, uint16_t& out_y) noexcept {
+    int best_idx = -1;
+    uint16_t best_y = 0xFFFF;
+    uint16_t best_w = 0xFFFF;
+
+    for (int i = 0; i < s.node_count; ++i) {
+        uint16_t y = skyline_fit(s, i, rw, rh);
+        if (y == 0xFFFF)
+            continue;
+        // heuristic: minimal y, then minimal width
+        if (y < best_y || (y == best_y && s.nodes[i].w < best_w)) {
+            best_y = y;
+            best_idx = i;
+            best_w = s.nodes[i].w;
+        }
+    }
+    if (best_idx < 0) return false;
+    if ((uint32_t)best_y + rh > s.width) return false;
+
+    out_x = s.nodes[best_idx].x;
+    out_y = best_y;
+
+    // add new node
+    if (s.node_count + 1 > s.node_cap) return false;
+
+    SkylineNode newn;
+    newn.x = out_x;
+    newn.y = (uint16_t)(best_y + rh);
+    newn.w = rw;
+
+    // insert node at best_idx
+    for (int i = s.node_count; i > best_idx; --i) s.nodes[i] = s.nodes[i - 1];
+    s.nodes[best_idx] = newn;
+    ++s.node_count;
+
+    // shrink/erase covered nodes to the right
+    for (int i = best_idx + 1; i < s.node_count; ) {
+        SkylineNode& n = s.nodes[i];
+        uint16_t prev_x = s.nodes[i - 1].x;
+        uint16_t prev_w = s.nodes[i - 1].w;
+        uint16_t end_x = (uint16_t)(prev_x + prev_w);
+
+        if (n.x < end_x) {
+            uint16_t shrink = (uint16_t)(end_x - n.x);
+            if (shrink >= n.w) {
+                // remove node i
+                for (int j = i; j < s.node_count - 1; ++j) s.nodes[j] = s.nodes[j + 1];
+                --s.node_count;
+                continue;
+            }
+            else {
+                n.x = end_x;
+                n.w = (uint16_t)(n.w - shrink);
+            }
+        }
+        break;
+    }
+
+    skyline_merge(s);
+    return true;
+}
+
 struct PlanResult {
     bool ok;
     uint32_t planned;
@@ -146,7 +245,19 @@ struct GlyphScratch {
     uint16_t* visit;  // Stack / set of visited glyph indices
     uint16_t  visit_n;
 };
-
+static inline uint16_t* scratch_d2_r(const GlyphScratch& s) noexcept { return s.min_d2; }
+static inline uint16_t* scratch_d2_g(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area; }
+static inline uint16_t* scratch_d2_b(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area * 2; }
+static inline uint16_t* scratch_d2_a(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area * 3; }
+// fill as form all the fields
+struct PlanInput {
+    DfMode   mode;
+    uint16_t pixel_height;   // <=64
+    float    spread_px;
+    // codepoints source:
+    const uint32_t* codepoints;
+    uint32_t        codepoint_count;
+};
 struct Xform {
     // [ m00 m01 dx ]
     // [ m10 m11 dy ]
@@ -156,12 +267,10 @@ struct Xform {
 
     static inline Xform identity() noexcept { return{}; }
 };
-
 static inline void xform_apply(const Xform& xf, float x, float y, float& ox, float& oy) noexcept {
     ox = xf.m00 * x + xf.m01 * y + xf.dx;
     oy = xf.m10 * x + xf.m11 * y + xf.dy;
 }
-
 // child = parent ∘ local  (apply local, then parent)
 static inline Xform xform_compose(const Xform& parent, const Xform& local) noexcept {
     Xform r;
@@ -174,16 +283,6 @@ static inline Xform xform_compose(const Xform& parent, const Xform& local) noexc
     r.dy = parent.m10 * local.dx + parent.m11 * local.dy + parent.dy;
     return r;
 }
-
-struct PlanInput {
-    DfMode   mode;
-    uint16_t pixel_height;   // <=64
-    float    spread_px;
-    // codepoints source:
-    const uint32_t* codepoints;
-    uint32_t codepoint_count;
-};
-
 // A "view" onto one user-provided memory block.
 // User never allocates glyphs/nodes/scratch separately.
 struct FontPlan {
@@ -210,46 +309,18 @@ struct FontPlan {
     void* _scratch_mem{};
     size_t     _scratch_bytes{};
 };
-
-
-static inline uint16_t pack_nd2_u16(float d2, float spread) noexcept {
-    // nd2 = clamp(d2 / spread^2, 0..1) -> u16
-    const float s2 = spread > 0.f ? (spread * spread) : 1.f;
-    float nd2 = d2 / s2;
-    if (nd2 < 0.f) nd2 = 0.f;
-    if (nd2 > 1.f) nd2 = 1.f;
-    return (uint16_t)(nd2 * 65535.f + 0.5f);
-}
-static inline uint16_t* scratch_d2_r(const GlyphScratch& s) noexcept { return s.min_d2; }
-static inline uint16_t* scratch_d2_g(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area; }
-static inline uint16_t* scratch_d2_b(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area * 2; }
-static inline uint16_t* scratch_d2_a(const GlyphScratch& s, uint32_t max_area) noexcept { return s.min_d2 + max_area * 3; }
-
-
-
 // Very small bump allocator for "plan_mem" block.
 struct MemArena {
     uint8_t* base;
     size_t   cap;
-    size_t   off;
-
-    inline void init(void* mem, size_t bytes) noexcept {
-        base = (uint8_t*)mem;
-        cap = bytes;
-        off = 0;
-    }
-
+    size_t   off; 
+    inline void init(void* mem, size_t bytes) noexcept { base=(uint8_t*)mem; cap=bytes; off=0; }
     inline void* take(size_t bytes, size_t align) noexcept {
-        const size_t mask = align - 1;
-        size_t aligned = (off + mask) & ~mask;
-        if (aligned + bytes > cap) return nullptr;
-        void* p = base + aligned;
-        off = aligned + bytes;
-        return p;
+        size_t aligned = (off + (align-(size_t)1)) & ~(align-(size_t)1);
+        if (aligned+bytes > cap) return nullptr;
+        off = aligned+bytes;     return base + aligned;
     }
 };
-
-
 static constexpr size_t align_up(size_t v, size_t a) noexcept { return (v + (a - 1)) & ~(a - 1); }
 static inline size_t glyph_scratch_bytes(uint16_t max_points,
                                          uint32_t max_area,
@@ -276,52 +347,48 @@ static inline size_t glyph_scratch_bytes(uint16_t max_points,
     return align_up(off, 16);
 }
 
-static inline GlyphScratch bind_glyph_scratch(void* mem,
-                                              uint16_t max_points,
-                                              uint32_t max_area,
-                                              DfMode mode) noexcept {
+static inline GlyphScratch bind_glyph_scratch(void* mem, uint16_t max_points,
+                                              uint32_t max_area, DfMode mode) noexcept {
     uint8_t* p = (uint8_t*)mem;
     size_t off = 0;
-
     auto take = [&](size_t bytes, size_t align) -> void* {
         off = align_up(off, align);
         void* r = p + off;
         off += bytes;
         return r;
     };
-
     GlyphScratch s{};
     s.flags = (uint8_t*)take((size_t)max_points * sizeof(uint8_t), 16);
     s.px    = (int16_t*)take((size_t)max_points * sizeof(int16_t), 16);
     s.py    = (int16_t*)take((size_t)max_points * sizeof(int16_t), 16);
-
     const size_t d2_mult = mode==DfMode::SDF ? 1u :
                            mode==DfMode::MSDF ? 3u : 4u;
-    s.min_d2 = (uint16_t*)take((size_t)max_area * sizeof(uint16_t) * d2_mult, 16);
-    s.inside = (uint8_t*) take((size_t)max_area * sizeof(uint8_t), 16);
-    s.xs     = (float*)   take((size_t)GlyphScratch::MAX_XS * sizeof(float), 16);
+    s.min_d2 = (uint16_t*)take((size_t)max_area * sizeof(uint16_t) * d2_mult,      16);
+    s.inside = (uint8_t*) take((size_t)max_area * sizeof(uint8_t),                 16);
+    s.xs     = (float*)   take((size_t)GlyphScratch::MAX_XS    * sizeof(float),    16);
     s.visit  = (uint16_t*)take((size_t)GlyphScratch::VISIT_CAP * sizeof(uint16_t), 16);
     s.visit_n = 0;
     return s;
 }
 
 // helper: bytes for plan block (glyphs + nodes + scratch)
-static inline size_t plan_block_bytes(uint32_t glyph_count,
-                                      uint32_t node_cap,
-                                      uint16_t max_points,
-                                      uint32_t max_area,
-                                      DfMode mode) noexcept
-{
+static inline size_t plan_block_bytes(uint32_t glyph_count, uint32_t node_cap,
+                                      uint16_t max_points,  uint32_t max_area, DfMode mode) noexcept {
     size_t off = 0;
-    auto aup = [](size_t v, size_t a) noexcept { return (v + (a - 1)) & ~(a - 1); };
-
+    auto aup = [](size_t v, size_t a) noexcept { return (v + (a-1)) & ~(a-1); };
     off = aup(off, 16); off += (size_t)glyph_count * sizeof(GlyphPlan);
-    off = aup(off, 16); off += (size_t)node_cap   * sizeof(SkylineNode);
-
+    off = aup(off, 16); off += (size_t)node_cap * sizeof(SkylineNode);
     const size_t scratch_bytes = glyph_scratch_bytes(max_points, max_area, mode);
     off = aup(off, 16); off += scratch_bytes;
-
     return aup(off, 16);
+}
+// Basic Newton-Raphson sqrt approximation
+static inline float sqrt(float x) noexcept {
+    if (x<=0) return 0;
+    float r = x;
+    for (int i=0; i<5; ++i)
+        r = 0.5f*(r + x/r);
+    return r;
 }
 static constexpr uint32_t isqrt_u32(uint32_t x) noexcept {
     // integer sqrt floor
@@ -340,6 +407,10 @@ static constexpr uint32_t ceil_sqrt_u32(uint32_t x) noexcept {
     uint32_t r = isqrt_u32(x);
     return (r * r < x) ? (r + 1) : r;
 }
+static inline int iceil(float v) noexcept {
+    int i = (int)v;
+    return (v > (float)i) ? (i + 1) : i;
+}
 static constexpr uint16_t ceil_to_u16(float v) noexcept {
     int iv = (int)v;
     if ((float)iv < v) ++iv;
@@ -357,14 +428,17 @@ static constexpr uint16_t next_pow2_u16(uint32_t v) noexcept {
 }
 static constexpr uint16_t u16_max(uint16_t a, uint16_t b) noexcept { return a > b ? a : b; }
 static constexpr uint16_t u16_min(uint16_t a, uint16_t b) noexcept { return a < b ? a : b; }
+static inline float fminf(float a, float b) noexcept { return a < b ? a : b; }
+static inline float fmaxf(float a, float b) noexcept { return a > b ? a : b; }
+static inline float fabsf_i(float v) noexcept { return v < 0.f ? -v : v; }
 
-// Basic Newton-Raphson sqrt approximation
-static inline float sqrt(float x) noexcept {
-    if (x<=0) return 0;
-    float r = x;
-    for (int i=0; i<5; ++i)
-        r = 0.5f*(r + x/r);
-    return r;
+static inline uint16_t pack_nd2_u16(float d2, float spread) noexcept {
+    // nd2 = clamp(d2 / spread^2, 0..1) -> u16
+    const float s2 = spread > 0.f ? (spread * spread) : 1.f;
+    float nd2 = d2 / s2;
+    if (nd2 < 0.f) nd2 = 0.f;
+    if (nd2 > 1.f) nd2 = 1.f;
+    return (uint16_t)(nd2 * 65535.f + 0.5f);
 }
 static inline float dist_line_sq(float px, float py,
                                  float ax, float ay,
@@ -466,14 +540,11 @@ struct DfGridFast {
 
     uint8_t* inside;       // [w*h]
 };
-
 static inline void pixel_center_to_font(float& fx, float& fy, const DfGridFast& g,
                                         int x, int y) noexcept {
     fx = g.origin_x + (x+.5f) * g.inv_scale;
     fy = g.origin_y + ((g.h-1 - y) + .5f) * g.inv_scale;
 }
-
-
 
 struct DfWindingPass {
     DfGrid& g;
@@ -651,16 +722,19 @@ struct DfSignScanlinePass {
     }
 
     inline void line(float x0, float y0, float x1, float y1, uint8_t /*edge_color*/) noexcept {
+        // ignore horizontal edges (critical for vertex double-count stability)
+        if (y0 == y1) return;
+
         // standard half-open rule to avoid double counting vertices
-        float ay = y0, by = y1;
-        float ax = x0, bx = x1;
+        float ay=y0, by=y1, ax=x0, bx=x1;
+        if (ay > by) { float tx=ax; ax=bx; bx=tx; float ty=ay; ay=by; by=ty; }
 
-        if (ay > by) { float tx = ax; ax = bx; bx = tx; float ty = ay; ay = by; by = ty; }
-
-        if (!(scan_y > ay && scan_y <= by)) return; // (ay, by]
-        float t = (scan_y - ay) / (by - ay);
-        float ix = ax + t * (bx - ax);
-
+        // canonical half-open: [ay, by)
+        if (!(scan_y >= ay && scan_y < by)) return;
+        
+        float t = (scan_y-ay) / (by-ay);
+        float ix = ax + t*(bx-ax);
+ 
         if (count < GlyphScratch::MAX_XS) xs[count++] = ix;
     }
 
@@ -677,24 +751,41 @@ struct DfSignScanlinePass {
     inline void finalize_row(int y) noexcept {
         sort_small(xs, count);
 
-        // parity fill: pairs [x0,x1], [x2,x3], ...
-        // write into g.inside[y*w + x]
-        int w = g.w;
-        for (int x=0; x<w; ++x) g.inside[y*w + x] = 0;
+        // tiny merge only (float noise)
+        const float tol = 1e-4f * g.inv_scale; // ~0.0001 px
+        int m=0;
+        for (int i=0;i<count;++i){
+            float v=xs[i];
+            if (m && fabsf_i(v - xs[m-1]) < tol) continue;
+            xs[m++] = v;
+        }
+        count = m;
 
+        const int w = g.w;
+        uint8_t* row = g.inside + y*w;
+        for (int x=0; x<w; ++x) row[x] = 0;
+
+        // pixel-center x in font space: fx = origin_x + (x+0.5)/scale
+        // We want to mark pixels whose centers lie in [x0, x1) (half-open).
         for (int i=0; i+1 < count; i += 2) {
             float x0 = xs[i];
             float x1 = xs[i+1];
+            if (x0 > x1) { float t=x0; x0=x1; x1=t; }
 
-            // convert font-space x to pixel indices
-            int px0 = (int)((x0 - g.origin_x) * g.scale);
-            int px1 = (int)((x1 - g.origin_x) * g.scale);
+            // Convert to pixel index range using centers:
+            // x_center = origin_x + (x+0.5)/scale
+            // x_center >= x0  => x >= (x0-origin_x)*scale - 0.5
+            // x_center <  x1  => x <  (x1-origin_x)*scale - 0.5
+            float a = (x0 - g.origin_x) * g.scale - 0.5f;
+            float b = (x1 - g.origin_x) * g.scale - 0.5f;
 
-            if (px0 > px1) { int t = px0; px0 = px1; px1 = t; }
+            int px0 = iceil(a);
+            int px1 = iceil(b);   // exclusive end
+
             if (px0 < 0) px0 = 0;
-            if (px1 >= w) px1 = w-1;
-
-            for (int x = px0; x <= px1; ++x) g.inside[y*w + x] = 1;
+            if (px1 > w) px1 = w;
+            for (int x = px0; x < px1; ++x)
+                row[x] = 1;
         }
     }
 };
@@ -747,7 +838,7 @@ struct DfSink {
 
     inline void quad(float cx, float cy, float nx, float ny) noexcept {
         // fixed-step flatten (cheap, predictable)
-        constexpr int STEPS = 4;
+        constexpr int STEPS = 8;
         float ax = x, ay = y;
         for (int i=1; i<=STEPS; ++i) {
             const float t  = (float)i * (1.0f / (float)STEPS);
@@ -764,7 +855,7 @@ struct DfSink {
 
     inline void cubic(float cx1, float cy1, float cx2, float cy2, float nx, float ny) noexcept {
         // fixed-step cubic flatten
-        constexpr int STEPS = 8;
+        constexpr int STEPS = 12;
         float ax = x, ay = y;
         for (int i=1; i<=STEPS; ++i) {
             const float t  = (float)i * (1.0f / (float)STEPS);
@@ -797,108 +888,6 @@ struct DfSink {
     }
 
 }; // struct DfSink
-
-static inline void skyline_init(Skyline& s, uint16_t width, SkylineNode* nodes, int cap) noexcept {
-    s.nodes = nodes;
-    s.node_cap = cap;
-    s.width = width;
-    s.node_count = 1;
-    s.nodes[0] = SkylineNode{ 0, 0, width };
-}
-static inline void skyline_merge(Skyline& s) noexcept {
-    for (int i = 0; i < s.node_count - 1; ) {
-        if (s.nodes[i].y == s.nodes[i + 1].y) {
-            s.nodes[i].w = (uint16_t)(s.nodes[i].w + s.nodes[i + 1].w);
-            for (int j = i + 1; j < s.node_count - 1; ++j) s.nodes[j] = s.nodes[j + 1];
-            --s.node_count;
-        }
-        else {
-            ++i;
-        }
-    }
-}
-// returns y if fits, else 0xFFFF
-static inline uint16_t skyline_fit(const Skyline& s, int idx, uint16_t rw, uint16_t rh) noexcept {
-    uint16_t x = s.nodes[idx].x;
-    if ((uint32_t)x + rw > s.width) return 0xFFFF;
-
-    uint16_t y = s.nodes[idx].y;
-    uint16_t width_left = rw;
-
-    int i = idx;
-    while (width_left > 0) {
-        if (i >= s.node_count) return 0xFFFF;
-        if (s.nodes[i].y > y) y = s.nodes[i].y;
-
-        if ((uint32_t)y + rh > s.width) return 0xFFFF; // defensive
-
-        if (s.nodes[i].w >= width_left) break;
-        width_left = (uint16_t)(width_left - s.nodes[i].w);
-        ++i;
-    }
-    return y;
-}
-static inline bool skyline_insert(Skyline& s, uint16_t rw, uint16_t rh, uint16_t& out_x, uint16_t& out_y) noexcept {
-    int best_idx = -1;
-    uint16_t best_y = 0xFFFF;
-    uint16_t best_w = 0xFFFF;
-
-    for (int i = 0; i < s.node_count; ++i) {
-        uint16_t y = skyline_fit(s, i, rw, rh);
-        if (y == 0xFFFF)
-            continue;
-        // heuristic: minimal y, then minimal width
-        if (y < best_y || (y == best_y && s.nodes[i].w < best_w)) {
-            best_y = y;
-            best_idx = i;
-            best_w = s.nodes[i].w;
-        }
-    }
-    if (best_idx < 0) return false;
-    if ((uint32_t)best_y + rh > s.width) return false;
-
-    out_x = s.nodes[best_idx].x;
-    out_y = best_y;
-
-    // add new node
-    if (s.node_count + 1 > s.node_cap) return false;
-
-    SkylineNode newn;
-    newn.x = out_x;
-    newn.y = (uint16_t)(best_y + rh);
-    newn.w = rw;
-
-    // insert node at best_idx
-    for (int i = s.node_count; i > best_idx; --i) s.nodes[i] = s.nodes[i - 1];
-    s.nodes[best_idx] = newn;
-    ++s.node_count;
-
-    // shrink/erase covered nodes to the right
-    for (int i = best_idx + 1; i < s.node_count; ) {
-        SkylineNode& n = s.nodes[i];
-        uint16_t prev_x = s.nodes[i - 1].x;
-        uint16_t prev_w = s.nodes[i - 1].w;
-        uint16_t end_x = (uint16_t)(prev_x + prev_w);
-
-        if (n.x < end_x) {
-            uint16_t shrink = (uint16_t)(end_x - n.x);
-            if (shrink >= n.w) {
-                // remove node i
-                for (int j = i; j < s.node_count - 1; ++j) s.nodes[j] = s.nodes[j + 1];
-                --s.node_count;
-                continue;
-            }
-            else {
-                n.x = end_x;
-                n.w = (uint16_t)(n.w - shrink);
-            }
-        }
-        break;
-    }
-
-    skyline_merge(s);
-    return true;
-}
 
 struct Font {
     explicit Font() noexcept = default;
@@ -1597,68 +1586,154 @@ bool Font::RunGlyfStream(int glyph_index,
 
         // --- emit contours ---
         uint16_t start = 0;
-        for (int c = 0; c < ncontours; ++c) {
-
+        uint8_t col = 0;
+        auto next_col = [&]{ col = (uint8_t)((col+1) % 3); };
+        auto emit_contour = [&](uint16_t s, uint16_t end) noexcept {
+            auto at = [&](uint16_t idx)->uint16_t { return (idx==end) ? s : (uint16_t)(idx+1); };
+                
+            auto X = [&](uint16_t idx)->float { return (float)px[idx]; };
+            auto Y = [&](uint16_t idx)->float { return (float)py[idx]; };
+            auto ON = [&](uint16_t idx)->bool { return is_on_(flags[idx]); };
+                
+            // ---- choose start point P0 (must be on-curve in param space) ----
+            uint16_t first = s;
+            uint16_t last  = end;
+                
+            float P0x, P0y;        // current pen position in font units
+            float Cx=0, Cy=0;      // pending control point
+            bool  hasC=false;
+                
+            if (ON(first)) {
+                P0x = X(first); P0y = Y(first);
+            } else {
+                // start is off-curve: start point is either last on-curve, or midpoint(lastOff, firstOff)
+                if (ON(last)) {
+                    P0x = X(last); P0y = Y(last);
+                } else {
+                    P0x = 0.5f*(X(last)+X(first));
+                    P0y = 0.5f*(Y(last)+Y(first));
+                }
+                // also treat first off-curve as pending control for the next segment
+                Cx = X(first); Cy = Y(first);
+                hasC = true;
+            }
+        
+            emit_move(P0x, P0y);
+        
+            // iterate points starting AFTER first
+            uint16_t i = first;
+            while (true) {
+                uint16_t j = at(i);
+                if (j == first) break; // completed loop back to start index
+            
+                float jx = X(j), jy = Y(j);
+                bool  jon = ON(j);
+            
+                if (jon) {
+                    sink.set_edge_color(col);
+                    if (hasC) {
+                        emit_quad(Cx, Cy, jx, jy);
+                        hasC = false;
+                    } else {
+                        emit_line(jx, jy);
+                    }
+                    next_col();
+                    P0x = jx; P0y = jy;
+                } else {
+                    if (hasC) {
+                        // off-off: insert implicit on at midpoint M between C and j
+                        float mx = 0.5f*(Cx + jx);
+                        float my = 0.5f*(Cy + jy);
+                        sink.set_edge_color(col);
+                        emit_quad(Cx, Cy, mx, my);
+                        next_col();
+                        P0x = mx; P0y = my;
+                        // keep j as next pending control
+                        Cx = jx; Cy = jy;
+                        hasC = true;
+                    } else {
+                        // first off after on: just store control
+                        Cx = jx; Cy = jy;
+                        hasC = true;
+                    }
+                }
+            
+                i = j;
+            }
+        
+            // close contour to start point (Pstart = P0 at move time)
+            // We need the geometric start point (the pen at emit_move). Store it:
+        };
+        
+        // ---- call site per contour ----
+        for (int c=0; c<ncontours; ++c) {
             sink.set_edge_color((uint8_t)(c % 3));
             const uint16_t end = ushort_(end_pts + 2*c);
-            const uint16_t s = start;
-
-            if (!is_on_(flags[ s ])) {
-                const uint16_t prev = (s==start) ? end : (uint16_t)(s-1);;
-                if (!is_on_(flags[ prev ])) {
-                    // start at midpoint of two off-curve points
-                    emit_move(0.5f * (float(px[s]) + float(px[prev])),
-                              0.5f * (float(py[s]) + float(py[prev])));
-                }
-                else { emit_move((float)px[prev], (float)py[prev]); }
+            const uint16_t s   = start;
+        
+            // store start position to close correctly
+            float startx, starty;
+            {
+                uint16_t first = s, last = end;
+                if (is_on_(flags[first])) { startx=(float)px[first]; starty=(float)py[first]; }
+                else if (is_on_(flags[last])) { startx=(float)px[last]; starty=(float)py[last]; }
+                else { startx=0.5f*((float)px[last]+(float)px[first]); starty=0.5f*((float)py[last]+(float)py[first]); }
             }
-            else { emit_move((float)px[s], (float)py[s]); }
-
-            uint16_t i = s;
+        
+            // emit contour with streaming normalisation
+            {
+                auto at = [&](uint16_t idx)->uint16_t { return (idx==end) ? s : (uint16_t)(idx+1); };
+                auto X  = [&](uint16_t idx)->float { return (float)px[idx]; };
+                auto Y  = [&](uint16_t idx)->float { return (float)py[idx]; };
+                auto ON = [&](uint16_t idx)->bool  { return is_on_(flags[idx]); };
             
-
-            while (true) {
-                const uint16_t ni = (i==end) ? start : (uint16_t)(i+1);;
-
-                const bool on_i = is_on_(flags[i]);
-                const bool on_ni = is_on_(flags[ni]);
-
-                const float xi = (float)px[i];
-                const float yi = (float)py[i];
-                const float xni = (float)px[ni];
-                const float yni = (float)py[ni];
-
-                if (on_i && on_ni) {
-                    emit_line(xni, yni);
+                float Cx=0, Cy=0; bool hasC=false;
+            
+                // init pen
+                if (ON(s)) {
+                    emit_move(X(s), Y(s));
+                } else {
+                    uint16_t last = end;
+                    float sx = ON(last) ? X(last) : 0.5f*(X(last)+X(s));
+                    float sy = ON(last) ? Y(last) : 0.5f*(Y(last)+Y(s));
+                    emit_move(sx, sy);
+                    Cx = X(s); Cy = Y(s); hasC=true;
                 }
-                else if (on_i && !on_ni) {
-                    uint16_t nn = (ni==end) ? start : (uint16_t)(ni+1);
-                    const float xnn = (float)px[nn];
-                    const float ynn = (float)py[nn];
-
-                    if (is_on_(flags[nn])) {
-                        emit_quad(xni, yni, xnn, ynn);
+            
+                uint16_t i = s;
+                while (true) {
+                    uint16_t j = at(i);
+                    if (j == s) break;
+                
+                    float jx=X(j), jy=Y(j);
+                    if (ON(j)) {
+                        sink.set_edge_color(col);
+                        if (hasC) {  emit_quad(Cx,Cy, jx,jy); hasC=false; }
+                        else      { emit_line(jx,jy); }
+                        next_col();
+                    } else {
+                        if (hasC) {
+                            float mx=0.5f*(Cx+jx), my=0.5f*(Cy+jy);
+                            sink.set_edge_color(col);
+                            emit_quad(Cx,Cy, mx,my);
+                            next_col();
+                            Cx=jx; Cy=jy; hasC=true;
+                        } else {
+                            Cx=jx; Cy=jy; hasC=true;
+                        }
                     }
-                    else {
-                        // off->off after on: implicit on at midpoint
-                        const float xm = 0.5f * (xni + xnn);
-                        const float ym = 0.5f * (yni + ynn);
-                        emit_quad(xni, yni, xm, ym);
-                    }
+                    i = j;
                 }
-                else if (!on_i && on_ni) {
-                    emit_quad(xi, yi, xni, yni);
-                }
-                else { // off -> off
-                    const float xm = 0.5f * (xi + xni);
-                    const float ym = 0.5f * (yi + yni);
-                    sink.quad(xi, yi, xm, ym);
-                }
-                i = ni;
-                if (i==s) break;
+            
+                // finish back to start point
+                sink.set_edge_color(col);
+                if (hasC) emit_quad(Cx,Cy, startx,starty);
+                else      emit_line(startx,starty);
+                next_col();
             }
-
-            sink.close();
+        
+            // do not call sink.close() if you already explicitly returned to start
+            // (otherwise you may double-close)
             start = (uint16_t)(end + 1);
         }
     }
@@ -1841,7 +1916,7 @@ inline int Font::FindGlyphIndex(int unicode_codepoint) const noexcept {
         return 0;
     }
     else if (format == 2) {
-        STBTT_assert(0); // @TODO: high-byte mapping for japanese/chinese/korean
+        assert(0); // @TODO: high-byte mapping for japanese/chinese/korean
         return 0;
     }
     // standard mapping for windows fonts: binary search collection of ranges
@@ -1917,7 +1992,7 @@ inline int Font::FindGlyphIndex(int unicode_codepoint) const noexcept {
         return 0; // not found
     }
     // @TODO
-    STBTT_assert(0);
+    assert(0);
     return 0;
 }
 
