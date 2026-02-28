@@ -58,11 +58,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # -----------------------------------------------------------------------------
 # Config groups
 # -----------------------------------------------------------------------------
-set(FREESTANDING_CONFIGS ReleaseMini ReleaseNoConsole ReleaseMiniNoConsole)
+set(FREESTANDING_CONFIGS ReleaseMini ReleaseMiniNoConsole)
 
 # Helper generator expression: true when freestanding config
 set(_GE_FREESTANDING
-    $<OR:$<CONFIG:ReleaseMini>,$<CONFIG:ReleaseNoConsole>,$<CONFIG:ReleaseMiniNoConsole>>
+    $<OR:$<CONFIG:ReleaseMini>,$<CONFIG:ReleaseMiniNoConsole>>
 )
 
 # -----------------------------------------------------------------------------
@@ -198,6 +198,9 @@ function(stb_apply_common target)
             $<$<OR:$<CONFIG:Release>,$<CONFIG:ReleaseMini>,$<CONFIG:ReleaseNoConsole>,$<CONFIG:ReleaseMiniNoConsole>>:/OPT:REF>
             $<$<OR:$<CONFIG:Release>,$<CONFIG:ReleaseMini>,$<CONFIG:ReleaseNoConsole>,$<CONFIG:ReleaseMiniNoConsole>>:/OPT:ICF>
         )
+        set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY
+          "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        )
     endif()
 endfunction()
 
@@ -213,15 +216,12 @@ function(stb_apply_freestanding target)
     )
 
     if(MSVC)
-        # 1) DO NOT select CRT runtime for freestanding
-        set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY "")
-
-        # 2) No default libs at link time for freestanding configs
+        # 1) No default libs at link time for freestanding configs
         target_link_options(${target} PRIVATE
             $<$<AND:$<CXX_COMPILER_ID:MSVC>,${_GE_FREESTANDING}>:/NODEFAULTLIB>
         )
 
-        # 3) Explicit Win32 libs only (same list as higui; harmless for console tests)
+        # 2) Explicit Win32 libs only (same list as higui; harmless for console tests)
         target_link_libraries(${target} PRIVATE user32 gdi32 opengl32 kernel32 bcrypt)
     endif()
 
@@ -268,12 +268,15 @@ endfunction()
 
 function(stb_no_console target)
     if(MSVC)
-        target_link_options(${target} PRIVATE
-            $<$<CONFIG:ReleaseNoConsole>:/SUBSYSTEM:WINDOWS>
-            $<$<CONFIG:ReleaseNoConsole>:/ENTRY:WinMain>
-            $<$<CONFIG:ReleaseMiniNoConsole>:/SUBSYSTEM:WINDOWS>
-            $<$<CONFIG:ReleaseMiniNoConsole>:/ENTRY:WinMain>
+        set_property(TARGET ${target} PROPERTY WIN32_EXECUTABLE
+          $<OR:$<CONFIG:ReleaseNoConsole>,$<CONFIG:ReleaseMiniNoConsole>>
         )
+        #target_link_options(${target} PRIVATE
+        #    $<$<CONFIG:ReleaseNoConsole>:/SUBSYSTEM:WINDOWS>
+        #    $<$<CONFIG:ReleaseNoConsole>:/ENTRY:WinMain>
+        #    $<$<CONFIG:ReleaseMiniNoConsole>:/SUBSYSTEM:WINDOWS>
+        #    $<$<CONFIG:ReleaseMiniNoConsole>:/ENTRY:WinMain>
+        #)
     endif()
 endfunction()
 

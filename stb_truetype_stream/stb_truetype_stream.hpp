@@ -376,8 +376,9 @@ static inline size_t plan_block_bytes(uint32_t glyph_count, uint32_t node_cap,
                                       uint16_t max_points,  uint32_t max_area, DfMode mode) noexcept {
     size_t off = 0;
     auto aup = [](size_t v, size_t a) noexcept { return (v + (a-1)) & ~(a-1); };
-    off = aup(off, 16); off += (size_t)glyph_count * sizeof(GlyphPlan);
-    off = aup(off, 16); off += (size_t)node_cap * sizeof(SkylineNode);
+    off = aup(off, 16); off += (size_t)glyph_count * sizeof(GlyphPlan); // glyphs
+    off = aup(off, 16); off += (size_t)glyph_count * sizeof(uint32_t);  // sorted glyphs
+    off = aup(off, 16); off += (size_t)node_cap * sizeof(SkylineNode);  // skyline
     const size_t scratch_bytes = glyph_scratch_bytes(max_points, max_area, mode);
     off = aup(off, 16); off += scratch_bytes;
     return aup(off, 16);
@@ -1292,12 +1293,13 @@ inline bool Font::Plan(const PlanInput& in,
     a.init(plan_mem, plan_bytes);
 
     GlyphPlan* glyphs = (GlyphPlan*)a.take((size_t)glyph_count * sizeof(GlyphPlan), 16);
+    uint32_t* order = (uint32_t*)a.take(glyph_count * sizeof(uint32_t), 16);
     SkylineNode* nodes = (SkylineNode*)a.take((size_t)node_cap * sizeof(SkylineNode), 16);
 
     const size_t scratch_bytes = glyph_scratch_bytes(max_points, max_area, in.mode);
     void* scratch_mem = a.take(scratch_bytes, 16);
 
-    if (!glyphs || !nodes || !scratch_mem) return false;
+    if (!glyphs || !order || !nodes || !scratch_mem) return false;
 
     // --------- Fill glyph array (second pass) ----------
     uint32_t at = 0;
@@ -1331,6 +1333,23 @@ inline bool Font::Plan(const PlanInput& in,
     // defensive: should match glyph_count
     if (at != glyph_count) return false;
 
+    // --------- sort glyphs by height/area ---------
+    auto keyhw = [&](uint32_t k) -> uint32_t {
+        const auto& r = glyphs[k].rect;
+        return (uint32_t)r.h * 65536u + (uint32_t)r.w; // h major, w minor
+    };
+
+    for (uint32_t i=0; i<glyph_count; ++i) order[i]=i;
+    for (uint32_t i=1; i<glyph_count; ++i) {
+        uint32_t v = order[i];
+        uint32_t j = i;
+        while (j > 0 && keyhw(order[j-1]) < keyhw(v)) {
+            order[j] = order[j-1];
+            --j;
+        }
+        order[j] = v;
+    }
+
     // --------- Choose atlas side and skyline-pack ----------
     uint16_t side = next_pow2_u16(ceil_sqrt_u32(total_area));
     if (side < max_w) side = next_pow2_u16(max_w);
@@ -1338,21 +1357,20 @@ inline bool Font::Plan(const PlanInput& in,
     if (side < 64) side = 64;
 
     bool packed = false;
-    for (int attempt = 0; attempt < 10; ++attempt) {
+    for (int attempt=0; attempt<10; ++attempt) {
         Skyline sk{};
         skyline_init(sk, side, nodes, (int)node_cap);
 
         bool ok = true;
-        for (uint32_t i = 0; i < glyph_count; ++i) {
-            uint16_t x, y;
-            if (!skyline_insert(sk, glyphs[i].rect.w, glyphs[i].rect.h, x, y)) {
-                if ((uint32_t)x + glyphs[i].rect.w > side) return false;
-                if ((uint32_t)y + glyphs[i].rect.h > side) return false;
+        for (uint32_t i=0; i<glyph_count; ++i) {
+            const uint32_t k = order[i];
+            uint16_t x = 0, y = 0;
+            if (!skyline_insert(sk, glyphs[k].rect.w, glyphs[k].rect.h, x, y)) {
                 ok = false;
                 break;
             }
-            glyphs[i].rect.x = x;
-            glyphs[i].rect.y = y;
+            glyphs[k].rect.x = x;
+            glyphs[k].rect.y = y;
         }
 
         if (ok) { packed = true; break; }
@@ -1482,7 +1500,7 @@ bool Font::RunGlyfStream(int glyph_index,
 
     const uint8_t* g = _data + glyph_offset(glyph_index);
     {
-        const uint32_t g0 = g - _data;
+        const uint32_t g0 = static_cast<uint32_t>(g - _data);
         const uint32_t g1 = glyph_offset(glyph_index + 1);
         if (g0 == g1)
             return false; // empty glyph
