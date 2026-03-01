@@ -1,16 +1,16 @@
 #pragma once
 
-#include "stbtt_codepoints.hpp"
+#include "internal/stbtt_codepoints_internal.hpp"
 
-#include "script/latin.hpp"
-#include "script/cyrillic.hpp"
-#include "script/greek.hpp"
-#include "script/arabic.hpp"
-#include "script/hebrew.hpp"
-#include "script/devanagari.hpp"
-#include "script/cjk.hpp"
-#include "script/kana.hpp"
-#include "script/jouyou_kanji.hpp"
+#include "internal/latin.hpp"
+#include "internal/cyrillic.hpp"
+#include "internal/greek.hpp"
+#include "internal/arabic.hpp"
+#include "internal/hebrew.hpp"
+#include "internal/devanagari.hpp"
+#include "internal/cjk.hpp"
+#include "internal/kana.hpp"
+#include "internal/jouyou_kanji.hpp"
 
 namespace stbtt_codepoints {
     // ========================================================================
@@ -29,36 +29,35 @@ namespace stbtt_codepoints {
         JouyouKanji, // Japanese: common-use kanji
     };
 
-    static constexpr ScriptDescriptor GetScriptDescriptor(Script s) noexcept {
+    static constexpr internal::ScriptDescriptor GetScriptDescriptor(Script s) noexcept {
         switch (s)
         {
-        case Script::Latin:       return Latin;
-        case Script::Cyrillic:    return Cyrillic;
-        case Script::Greek:       return Greek;
-        case Script::Arabic:      return Arabic;
-        case Script::Hebrew:      return Hebrew;
-        case Script::Devanagari:  return Devanagari;
-        case Script::CJK:         return Cjk;
-        case Script::Kana:        return Kana;
-        case Script::JouyouKanji: return JouyouKanji;
-        default:                  return Latin;
+        case Script::Latin:       return internal::Latin;
+        case Script::Cyrillic:    return internal::Cyrillic;
+        case Script::Greek:       return internal::Greek;
+        case Script::Arabic:      return internal::Arabic;
+        case Script::Hebrew:      return internal::Hebrew;
+        case Script::Devanagari:  return internal::Devanagari;
+        case Script::CJK:         return internal::Cjk;
+        case Script::Kana:        return internal::Kana;
+        case Script::JouyouKanji: return internal::JouyouKanji;
+        default:                  return internal::Latin;
         }
     }
 
     // ========================================================================
-    // PASS 1: PLAN
+    // PASS 1: PLAN GLYPH COUNT
     // ========================================================================
 
     template<class FontT>
-    static inline uint32_t PlanGlyphs(const FontT& font,
-        Script script) noexcept {
-        const ScriptDescriptor& d = GetScriptDescriptor(script);
+    static inline uint32_t PlanGlyphs(const FontT& font, Script script) noexcept {
+        const internal::ScriptDescriptor& d = GetScriptDescriptor(script);
         uint32_t count = 0;
 
         // ranges
         for (uint32_t i = 0; i < d.range_count; ++i) {
-            Codepoint cp = d.ranges[i].first;
-            Codepoint end = d.ranges[i].last;
+            internal::Codepoint cp = d.ranges[i].first;
+            internal::Codepoint end = d.ranges[i].last;
             for (; cp <= end; ++cp) {
                 if (font.FindGlyphIndex(cp))
                     ++count;
@@ -74,52 +73,55 @@ namespace stbtt_codepoints {
         return count;
     }
 
-    // helper for variadic usage (OUTSIDE core API)
+    // 0 scripts => 0 glyphs
     template<class FontT>
-    static inline uint32_t PlanGlyphs(const FontT& font,
-                                            Script s0,
-                                            Script s1) noexcept {
-        return PlanGlyphs(font, s0)
-            + PlanGlyphs(font, s1);
+    static inline uint32_t PlanGlyphs(const FontT& /*font*/) noexcept {
+        return 0u;
     }
 
-    template<class FontT, class... Rest>
-    static inline uint32_t PlanGlyphs(const FontT& font,
-                                            Script s0,
-                                            Script s1,
-                                            Rest... rest) noexcept {
-        return PlanGlyphs(font, s0)
-            + PlanGlyphs(font, s1, rest...);
+    // N scripts => sum
+    template<class FontT, class... Scripts>
+    static inline uint32_t PlanGlyphs(const FontT& font, Script s0, Scripts... rest) noexcept {
+        return PlanGlyphs(font, s0) + PlanGlyphs(font, rest...);
     }
 
     // ========================================================================
-    // PASS 2: BUILD
+    // PASS 2: COLLECT GLYPHS
     // ========================================================================
 
     template<class FontT, class SinkT>
-    static inline void BuildGlyphs(const FontT& font,
-                                         Script script,
-                                         SinkT& sink) noexcept {
-        const ScriptDescriptor& d = GetScriptDescriptor(script);
+    static inline void CollectGlyphs(const FontT& font, SinkT& sink, Script script) noexcept {
+        const internal::ScriptDescriptor& d = GetScriptDescriptor(script);
 
         // ranges
         for (uint32_t i = 0; i < d.range_count; ++i) {
-            Codepoint cp = d.ranges[i].first;
-            Codepoint end = d.ranges[i].last;
+            internal::Codepoint cp = d.ranges[i].first;
+            internal::Codepoint end = d.ranges[i].last;
 
             for (; cp <= end; ++cp) {
                 int g = font.FindGlyphIndex(cp);
                 if (g)
-                    sink(cp, g);
+                    sink(cp, g); // call back
             }
         }
 
         // singles
         for (uint32_t i = 0; i < d.singles_count; ++i) {
-            Codepoint cp = d.singles[i];
+            internal::Codepoint cp = d.singles[i];
             int g = font.FindGlyphIndex(cp);
             if (g)
-                sink(cp, g);
+                sink(cp, g); // call back
         }
+    }
+
+    // Build: 0 scripts => nothing
+    template<class FontT, class SinkT>
+    static inline void CollectGlyphs(const FontT& /*font*/, SinkT& /*sink*/) noexcept {}
+
+    // Build: N scripts => call each
+    template<class FontT, class SinkT, class... Scripts>
+    static inline void CollectGlyphs(const FontT& font, SinkT& sink, Script s0, Scripts... rest) noexcept {
+        CollectGlyphs(font, s0, sink);
+        CollectGlyphs(font, sink, rest...);
     }
 } // namespace stbtt_codepoints

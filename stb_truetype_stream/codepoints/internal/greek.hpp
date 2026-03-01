@@ -1,8 +1,9 @@
 #pragma once
 
-#include "../stbtt_codepoints.hpp"
+#include "stbtt_codepoints_internal.hpp"
 
 namespace stbtt_codepoints {
+namespace internal {
 
     static constexpr CodepointRange greek_ranges[]{
         { 0x0370, 0x03FF },
@@ -14,4 +15,5 @@ namespace stbtt_codepoints {
                      sizeof(greek_ranges) / sizeof(CodepointRange)
     };
 
+} // namespace internal
 } // namespace stbtt_codepoints

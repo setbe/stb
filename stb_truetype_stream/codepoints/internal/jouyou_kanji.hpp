@@ -3,9 +3,10 @@
 Thanks for the data: https://x0213.org/joyo-kanji-code/index.en.html */
 
 #pragma once
-#include "../stbtt_codepoints.hpp"
+#include "stbtt_codepoints_internal.hpp"
 
 namespace stbtt_codepoints {
+namespace internal {
 
     static constexpr Codepoint jouyou_kanji[2136]{
         0x4E9C, 0x54C0,  0x6328, 0x611B, 0x66D6, 0x60AA, 0x63E1, 0x5727, 0x6271,
@@ -256,4 +257,5 @@ namespace stbtt_codepoints {
         /* ranges */ nullptr, 0
     };
 
+} // namespace internal
 } // namespace stbtt_codepoints

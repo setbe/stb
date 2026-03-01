@@ -3,6 +3,7 @@
 #include <stdint.h> // uint32_t
 
 namespace stbtt_codepoints {
+namespace internal {
     using Codepoint = uint32_t;
 
     struct CodepointRange {
@@ -19,3 +20,4 @@ namespace stbtt_codepoints {
     };
 
 } // namespace stb_codepoints
+} // namespace internal

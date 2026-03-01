@@ -1,8 +1,9 @@
 #pragma once
 
-#include "../stbtt_codepoints.hpp"
+#include "stbtt_codepoints_internal.hpp"
 
 namespace stbtt_codepoints {
+namespace internal {
 
     static constexpr CodepointRange kana_ranges[]{
         { 0x30A0, 0x30FF }, // katakana
@@ -15,4 +16,5 @@ namespace stbtt_codepoints {
                      sizeof(kana_ranges) / sizeof(CodepointRange)
     };
 
+} // namespace internal 
 } // namespace stbtt_codepoints

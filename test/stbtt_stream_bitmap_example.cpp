@@ -91,7 +91,7 @@ static bool generate_atlas_planned(stbtt_stream::Font& font,
         if (at < count) codepoints[at++] = cp;
     };
 
-    int dummy[] = { (stbtt_codepoints::BuildGlyphs(font, scripts, sink), 0)... };
+    int dummy[] = { (stbtt_codepoints::CollectGlyphs(font, sink, scripts), 0)... };
     (void)dummy;
 
     // --------- 1) PlanBytes ----------

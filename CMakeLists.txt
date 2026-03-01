@@ -334,18 +334,18 @@ set(SOURCES_TRUETYPE_CATCH
 set(SOURCES_TRUETYPE_STREAM
     "stb_truetype_stream/stb_truetype_stream.hpp"
 
-    "stb_truetype_stream/codepoints/stbtt_codepoints.hpp"
     "stb_truetype_stream/codepoints/stbtt_codepoints_stream.hpp"
+    "stb_truetype_stream/codepoints/internal/stbtt_codepoints_internal.hpp"
 
-    "stb_truetype_stream/codepoints/script/arabic.hpp"
-    "stb_truetype_stream/codepoints/script/cjk.hpp"
-    "stb_truetype_stream/codepoints/script/cyrillic.hpp"
-    "stb_truetype_stream/codepoints/script/devanagari.hpp"
-    "stb_truetype_stream/codepoints/script/greek.hpp"
-    "stb_truetype_stream/codepoints/script/hebrew.hpp"
-    "stb_truetype_stream/codepoints/script/jouyou_kanji.hpp"
-    "stb_truetype_stream/codepoints/script/kana.hpp"
-    "stb_truetype_stream/codepoints/script/latin.hpp"
+    "stb_truetype_stream/codepoints/internal/arabic.hpp"
+    "stb_truetype_stream/codepoints/internal/cjk.hpp"
+    "stb_truetype_stream/codepoints/internal/cyrillic.hpp"
+    "stb_truetype_stream/codepoints/internal/devanagari.hpp"
+    "stb_truetype_stream/codepoints/internal/greek.hpp"
+    "stb_truetype_stream/codepoints/internal/hebrew.hpp"
+    "stb_truetype_stream/codepoints/internal/jouyou_kanji.hpp"
+    "stb_truetype_stream/codepoints/internal/kana.hpp"
+    "stb_truetype_stream/codepoints/internal/latin.hpp"
 )
 
 # image
