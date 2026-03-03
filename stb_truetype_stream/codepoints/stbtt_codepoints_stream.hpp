@@ -11,6 +11,8 @@
 #include "internal/cjk.hpp"
 #include "internal/kana.hpp"
 #include "internal/jouyou_kanji.hpp"
+#include "internal/hangul.hpp"
+#include "internal/misc.hpp"
 
 namespace stbtt_codepoints {
     // ========================================================================
