@@ -1,0 +1,438 @@
+namespace stbi { namespace detail { namespace core {
+
+// Microsoft/Windows BMP image
+
+#ifndef STBI_NO_BMP
+static int bmp_test_raw(context *s) noexcept
+{
+   int r;
+   int sz;
+   if (get8(s) != 'B') return 0;
+   if (get8(s) != 'M') return 0;
+   get32le(s); // discard filesize
+   get16le(s); // discard reserved
+   get16le(s); // discard reserved
+   get32le(s); // discard data offset
+   sz = get32le(s);
+   r = (sz == 12 || sz == 40 || sz == 56 || sz == 108 || sz == 124);
+   return r;
+}
+
+static int bmp_test(context *s) noexcept
+{
+   int r = bmp_test_raw(s);
+   rewind(s);
+   return r;
+}
+
+
+// returns 0..31 for the highest set bit
+static int high_bit(unsigned int z) noexcept
+{
+   int n=0;
+   if (z == 0) return -1;
+   if (z >= 0x10000) { n += 16; z >>= 16; }
+   if (z >= 0x00100) { n +=  8; z >>=  8; }
+   if (z >= 0x00010) { n +=  4; z >>=  4; }
+   if (z >= 0x00004) { n +=  2; z >>=  2; }
+   if (z >= 0x00002) { n +=  1;/* >>=  1;*/ }
+   return n;
+}
+
+static int bitcount(unsigned int a) noexcept
+{
+   a = (a & 0x55555555) + ((a >>  1) & 0x55555555); // max 2
+   a = (a & 0x33333333) + ((a >>  2) & 0x33333333); // max 4
+   a = (a + (a >> 4)) & 0x0f0f0f0f; // max 8 per 4, now 8 bits
+   a = (a + (a >> 8)); // max 16 per 8 bits
+   a = (a + (a >> 16)); // max 32 per 8 bits
+   return a & 0xff;
+}
+
+// extract an arbitrarily-aligned N-bit value (N=bits)
+// from v, and then make it 8-bits long and fractionally
+// extend it to full full range.
+static int shiftsigned(unsigned int v, int shift, int bits) noexcept
+{
+   static unsigned int mul_table[9] = {
+      0,
+      0xff/*0b11111111*/, 0x55/*0b01010101*/, 0x49/*0b01001001*/, 0x11/*0b00010001*/,
+      0x21/*0b00100001*/, 0x41/*0b01000001*/, 0x81/*0b10000001*/, 0x01/*0b00000001*/,
+   };
+   static unsigned int shift_table[9] = {
+      0, 0,0,1,0,2,4,6,0,
+   };
+   if (shift < 0)
+      v <<= -shift;
+   else
+      v >>= shift;
+   STBI_ASSERT(v < 256);
+   v >>= (8-bits);
+   STBI_ASSERT(bits >= 0 && bits <= 8);
+   return (int) ((unsigned) v * mul_table[bits]) >> shift_table[bits];
+}
+
+typedef struct
+{
+   int bpp, offset, hsz;
+   unsigned int mr,mg,mb,ma, all_a;
+   int extra_read;
+} bmp_data;
+
+static int bmp_set_mask_defaults(bmp_data *info, int compress) noexcept
+{
+   // BI_BITFIELDS specifies masks explicitly, don't override
+   if (compress == 3)
+      return 1;
+
+   if (compress == 0) {
+      if (info->bpp == 16) {
+         info->mr = 31u << 10;
+         info->mg = 31u <<  5;
+         info->mb = 31u <<  0;
+      } else if (info->bpp == 32) {
+         info->mr = 0xffu << 16;
+         info->mg = 0xffu <<  8;
+         info->mb = 0xffu <<  0;
+         info->ma = 0xffu << 24;
+         info->all_a = 0; // if all_a is 0 at end, then we loaded alpha channel but it was all 0
+      } else {
+         // otherwise, use defaults, which is all-0
+         info->mr = info->mg = info->mb = info->ma = 0;
+      }
+      return 1;
+   }
+   return 0; // error
+}
+
+static void *bmp_parse_header(context *s, bmp_data *info) noexcept
+{
+   int hsz;
+   if (get8(s) != 'B' || get8(s) != 'M') return errpuc("not BMP", "Corrupt BMP");
+   get32le(s); // discard filesize
+   get16le(s); // discard reserved
+   get16le(s); // discard reserved
+   info->offset = get32le(s);
+   info->hsz = hsz = get32le(s);
+   info->mr = info->mg = info->mb = info->ma = 0;
+   info->extra_read = 14;
+
+   if (info->offset < 0) return errpuc("bad BMP", "bad BMP");
+
+   if (hsz != 12 && hsz != 40 && hsz != 56 && hsz != 108 && hsz != 124) return errpuc("unknown BMP", "BMP type not supported: unknown");
+   if (hsz == 12) {
+      s->x = get16le(s);
+      s->y = get16le(s);
+   } else {
+      s->x = get32le(s);
+      s->y = get32le(s);
+   }
+   if (get16le(s) != 1) return errpuc("bad BMP", "bad BMP");
+   info->bpp = get16le(s);
+   if (hsz != 12) {
+      int compress = get32le(s);
+      if (compress == 1 || compress == 2) return errpuc("BMP RLE", "BMP type not supported: RLE");
+      if (compress >= 4) return errpuc("BMP JPEG/PNG", "BMP type not supported: unsupported compression"); // this includes PNG/JPEG modes
+      if (compress == 3 && info->bpp != 16 && info->bpp != 32) return errpuc("bad BMP", "bad BMP"); // bitfields requires 16 or 32 bits/pixel
+      get32le(s); // discard sizeof
+      get32le(s); // discard hres
+      get32le(s); // discard vres
+      get32le(s); // discard colorsused
+      get32le(s); // discard max important
+      if (hsz == 40 || hsz == 56) {
+         if (hsz == 56) {
+            get32le(s);
+            get32le(s);
+            get32le(s);
+            get32le(s);
+         }
+         if (info->bpp == 16 || info->bpp == 32) {
+            if (compress == 0) {
+               bmp_set_mask_defaults(info, compress);
+            } else if (compress == 3) {
+               info->mr = get32le(s);
+               info->mg = get32le(s);
+               info->mb = get32le(s);
+               info->extra_read += 12;
+               // not documented, but generated by photoshop and handled by mspaint
+               if (info->mr == info->mg && info->mg == info->mb) {
+                  // ?!?!?
+                  return errpuc("bad BMP", "bad BMP");
+               }
+            } else
+               return errpuc("bad BMP", "bad BMP");
+         }
+      } else {
+         // V4/V5 header
+         int i;
+         if (hsz != 108 && hsz != 124)
+            return errpuc("bad BMP", "bad BMP");
+         info->mr = get32le(s);
+         info->mg = get32le(s);
+         info->mb = get32le(s);
+         info->ma = get32le(s);
+         if (compress != 3) // override mr/mg/mb unless in BI_BITFIELDS mode, as per docs
+            bmp_set_mask_defaults(info, compress);
+         get32le(s); // discard color space
+         for (i=0; i < 12; ++i)
+            get32le(s); // discard color space parameters
+         if (hsz == 124) {
+            get32le(s); // discard rendering intent
+            get32le(s); // discard offset of profile data
+            get32le(s); // discard size of profile data
+            get32le(s); // discard reserved
+         }
+      }
+   }
+   return (void *) 1;
+}
+
+
+static void *bmp_load(context *s, int *x, int *y, int *comp, int req_comp, result_info *ri) noexcept
+{
+   uc *out;
+   unsigned int mr=0,mg=0,mb=0,ma=0, all_a;
+   uc pal[256][4];
+   int psize=0,i,j,width;
+   int flip_vertically, pad, target;
+   bmp_data info;
+   STBI_NOTUSED(ri);
+
+   info.all_a = 255;
+   if (bmp_parse_header(s, &info) == NULL)
+      return NULL; // error code already set
+
+   flip_vertically = ((int) s->y) > 0;
+   s->y = abs((int) s->y);
+
+   if (s->y > STBI_MAX_DIMENSIONS) return errpuc("too large","Very large image (corrupt?)");
+   if (s->x > STBI_MAX_DIMENSIONS) return errpuc("too large","Very large image (corrupt?)");
+
+   mr = info.mr;
+   mg = info.mg;
+   mb = info.mb;
+   ma = info.ma;
+   all_a = info.all_a;
+
+   if (info.hsz == 12) {
+      if (info.bpp < 24)
+         psize = (info.offset - info.extra_read - 24) / 3;
+   } else {
+      if (info.bpp < 16)
+         psize = (info.offset - info.extra_read - info.hsz) >> 2;
+   }
+   if (psize == 0) {
+      // accept some number of extra bytes after the header, but if the offset points either to before
+      // the header ends or implies a large amount of extra data, reject the file as malformed
+      int bytes_read_so_far = s->callback_already_read + (int)(s->buffer - s->buffer_original);
+      int header_limit = 1024; // max we actually read is below 256 bytes currently.
+      int extra_data_limit = 256*4; // what ordinarily goes here is a palette; 256 entries*4 bytes is its max size.
+      if (bytes_read_so_far <= 0 || bytes_read_so_far > header_limit) {
+         return errpuc("bad header", "Corrupt BMP");
+      }
+      // we established that bytes_read_so_far is positive and sensible.
+      // the first half of this test rejects offsets that are either too small positives, or
+      // negative, and guarantees that info.offset >= bytes_read_so_far > 0. this in turn
+      // ensures the number computed in the second half of the test can't overflow.
+      if (info.offset < bytes_read_so_far || info.offset - bytes_read_so_far > extra_data_limit) {
+         return errpuc("bad offset", "Corrupt BMP");
+      } else {
+         skip(s, info.offset - bytes_read_so_far);
+      }
+   }
+
+   if (info.bpp == 24 && ma == 0xff000000)
+      s->n = 3;
+   else
+      s->n = ma ? 4 : 3;
+   if (req_comp && req_comp >= 3) // we can directly decode 3 or 4
+      target = req_comp;
+   else
+      target = s->n; // if they want monochrome, we'll post-convert
+
+   // sanity-check size
+   if (!mad3sizes_valid(target, s->x, s->y, 0))
+      return errpuc("too large", "Corrupt BMP");
+
+   out = (uc *) malloc_mad3(target, s->x, s->y, 0);
+   if (!out) return errpuc("outofmem", "Out of memory");
+   if (info.bpp < 16) {
+      int z=0;
+      if (psize == 0 || psize > 256) { free(out); return errpuc("invalid", "Corrupt BMP"); }
+      for (i=0; i < psize; ++i) {
+         pal[i][2] = get8(s);
+         pal[i][1] = get8(s);
+         pal[i][0] = get8(s);
+         if (info.hsz != 12) get8(s);
+         pal[i][3] = 255;
+      }
+      skip(s, info.offset - info.extra_read - info.hsz - psize * (info.hsz == 12 ? 3 : 4));
+      if (info.bpp == 1) width = (s->x + 7) >> 3;
+      else if (info.bpp == 4) width = (s->x + 1) >> 1;
+      else if (info.bpp == 8) width = s->x;
+      else { free(out); return errpuc("bad bpp", "Corrupt BMP"); }
+      pad = (-width)&3;
+      if (info.bpp == 1) {
+         for (j=0; j < (int) s->y; ++j) {
+            int bit_offset = 7, v = get8(s);
+            for (i=0; i < (int) s->x; ++i) {
+               int color = (v>>bit_offset)&0x1;
+               out[z++] = pal[color][0];
+               out[z++] = pal[color][1];
+               out[z++] = pal[color][2];
+               if (target == 4) out[z++] = 255;
+               if (i+1 == (int) s->x) break;
+               if((--bit_offset) < 0) {
+                  bit_offset = 7;
+                  v = get8(s);
+               }
+            }
+            skip(s, pad);
+         }
+      } else {
+         for (j=0; j < (int) s->y; ++j) {
+            for (i=0; i < (int) s->x; i += 2) {
+               int v=get8(s),v2=0;
+               if (info.bpp == 4) {
+                  v2 = v & 15;
+                  v >>= 4;
+               }
+               out[z++] = pal[v][0];
+               out[z++] = pal[v][1];
+               out[z++] = pal[v][2];
+               if (target == 4) out[z++] = 255;
+               if (i+1 == (int) s->x) break;
+               v = (info.bpp == 8) ? get8(s) : v2;
+               out[z++] = pal[v][0];
+               out[z++] = pal[v][1];
+               out[z++] = pal[v][2];
+               if (target == 4) out[z++] = 255;
+            }
+            skip(s, pad);
+         }
+      }
+   } else {
+      int rshift=0,gshift=0,bshift=0,ashift=0,rcount=0,gcount=0,bcount=0,acount=0;
+      int z = 0;
+      int easy=0;
+      skip(s, info.offset - info.extra_read - info.hsz);
+      if (info.bpp == 24) width = 3 * s->x;
+      else if (info.bpp == 16) width = 2*s->x;
+      else /* bpp = 32 and pad = 0 */ width=0;
+      pad = (-width) & 3;
+      if (info.bpp == 24) {
+         easy = 1;
+      } else if (info.bpp == 32) {
+         if (mb == 0xff && mg == 0xff00 && mr == 0x00ff0000 && ma == 0xff000000)
+            easy = 2;
+      }
+      if (!easy) {
+         if (!mr || !mg || !mb) { free(out); return errpuc("bad masks", "Corrupt BMP"); }
+         // right shift amt to put high bit in position #7
+         rshift = high_bit(mr)-7; rcount = bitcount(mr);
+         gshift = high_bit(mg)-7; gcount = bitcount(mg);
+         bshift = high_bit(mb)-7; bcount = bitcount(mb);
+         ashift = high_bit(ma)-7; acount = bitcount(ma);
+         if (rcount > 8 || gcount > 8 || bcount > 8 || acount > 8) { free(out); return errpuc("bad masks", "Corrupt BMP"); }
+      }
+      for (j=0; j < (int) s->y; ++j) {
+         if (easy) {
+            for (i=0; i < (int) s->x; ++i) {
+               unsigned char a;
+               out[z+2] = get8(s);
+               out[z+1] = get8(s);
+               out[z+0] = get8(s);
+               z += 3;
+               a = (easy == 2 ? get8(s) : 255);
+               all_a |= a;
+               if (target == 4) out[z++] = a;
+            }
+         } else {
+            int bpp = info.bpp;
+            for (i=0; i < (int) s->x; ++i) {
+               uint32 v = (bpp == 16 ? (uint32) get16le(s) : get32le(s));
+               unsigned int a;
+               out[z++] = STBI__BYTECAST(shiftsigned(v & mr, rshift, rcount));
+               out[z++] = STBI__BYTECAST(shiftsigned(v & mg, gshift, gcount));
+               out[z++] = STBI__BYTECAST(shiftsigned(v & mb, bshift, bcount));
+               a = (ma ? shiftsigned(v & ma, ashift, acount) : 255);
+               all_a |= a;
+               if (target == 4) out[z++] = STBI__BYTECAST(a);
+            }
+         }
+         skip(s, pad);
+      }
+   }
+
+   // if alpha channel is all 0s, replace with all 255s
+   if (target == 4 && all_a == 0)
+      for (i=4*s->x*s->y-1; i >= 0; i -= 4)
+         out[i] = 255;
+
+   if (flip_vertically) {
+      uc t;
+      for (j=0; j < (int) s->y>>1; ++j) {
+         uc *p1 = out +      j     *s->x*target;
+         uc *p2 = out + (s->y-1-j)*s->x*target;
+         for (i=0; i < (int) s->x*target; ++i) {
+            t = p1[i]; p1[i] = p2[i]; p2[i] = t;
+         }
+      }
+   }
+
+   if (req_comp && req_comp != target) {
+      out = convert_format(out, target, req_comp, s->x, s->y);
+      if (out == NULL) return out; // convert_format frees input on failure
+   }
+
+   *x = s->x;
+   *y = s->y;
+   if (comp) *comp = s->n;
+   return out;
+}
+#endif
+
+
+
+#ifndef STBI_NO_BMP
+static int bmp_info(context *s, int *x, int *y, int *comp) noexcept
+{
+   void *p;
+   bmp_data info;
+
+   info.all_a = 255;
+   p = bmp_parse_header(s, &info);
+   if (p == NULL) {
+      rewind( s );
+      return 0;
+   }
+   if (x) *x = s->x;
+   if (y) *y = s->y;
+   if (comp) {
+      if (info.bpp == 24 && info.ma == 0xff000000)
+         *comp = 3;
+      else
+         *comp = info.ma ? 4 : 3;
+   }
+   return 1;
+}
+
+inline int BmpFormatModule::Test(context *s) noexcept
+{
+   return bmp_test(s);
+}
+
+inline void *BmpFormatModule::Load(context *s, int *x, int *y, int *comp, int req_comp, result_info *ri) noexcept
+{
+   return bmp_load(s, x, y, comp, req_comp, ri);
+}
+
+inline int BmpFormatModule::Info(context *s, int *x, int *y, int *comp) noexcept
+{
+   return bmp_info(s, x, y, comp);
+}
+#endif
+
+} // namespace core
+} // namespace detail
+} // namespace stbi

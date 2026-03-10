@@ -350,6 +350,12 @@ set(SOURCES_TRUETYPE_STREAM
 
 # image
 set(SOURCES_IMAGE "stb_image/stb_image.hpp")
+set(SOURCES_IMAGE_CATCH
+    ${SOURCES_IMAGE}
+    "stb_image/stb_image.h"       # original for byte-diff tests
+    "test/stbi_test.hpp"
+    "test/stbi_ref_original.cpp"
+)
 
 # image write
 set(SOURCES_IMAGE_WRITE
@@ -430,6 +436,12 @@ stb_add_test_exe(iw_catch
     CPP "test/stbiw_catch.cpp"
     HEADERS ${SOURCES_IMAGE_WRITE_CATCH}
     LIBS image_write
+)
+
+stb_add_test_exe(i_catch
+    CPP "test/stbi_catch.cpp"
+    HEADERS ${SOURCES_IMAGE_CATCH}
+    LIBS image
 )
 
 stb_add_test_exe(iw_bench
