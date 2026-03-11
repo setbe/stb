@@ -11,18 +11,15 @@ Main goals:
 
 ## Repository status
 
-- `stb_truetype/` - active C++ rewrite based on `stb_truetype.h`.
-- `stb_truetype_stream/` - stream-oriented atlas pipeline (SDF, MSDF, MTSDF), no allocations inside the library path.
-- `stb_image_write/` - active C++ rewrite with freestanding hooks.
-- `stb_image/` - implemented `stb_image.hpp` two-pass API (Plan + Decode) with format-specific entry points and byte-diff tests.
-  Current implementation uses an internal embedded stb_image decoder snapshot (`stb_image/detail/stb_image_internal.hpp`) while C++ internal migration continues.
-- `stb_image_resize2/` - minimal/WIP integration.
+- `stb_truetype/` - Implemented based on `stb_truetype.h`.
+- `stb_truetype_stream/` - Stream-oriented atlas pipeline (SDF, MSDF, MTSDF), no allocations inside the library path.
+- `stb_image_write/` - Partially implemented (bmp, tga only).
+- `stb_image/` - Implemented.
+- `stb_image_resize2/` - NOT implemented.
 - `3rd_party/stb/` - upstream stb git submodule used for reference/byte-diff tests.
 - `test/` - Catch2 tests and small Windows examples.
 
-## stb_image.hpp status (updated)
-
-`stb_image/stb_image.hpp` is usable now:
+## stb_image
 
 - Supported through the C++ API: PNG, BMP, GIF, PSD, PIC, JPEG, PNM, HDR, TGA.
 - Two-pass usage is available:
@@ -30,8 +27,6 @@ Main goals:
   - Pass 2: `Decode*` writes into caller-provided memory.
 - Batch planning helpers are available to compute max/sum memory across many images.
 - Byte-diff tests are present against original `stb_image.h`.
-
-Important: current decode internals are still stb-derived, so internal transient allocations may still happen. The two-pass API already removes user-side guessing and supports deterministic pre-allocation strategy.
 
 ## Build (CMake)
 
