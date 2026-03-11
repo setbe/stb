@@ -35,6 +35,14 @@ Currently implemented here:
 - BMP (24-bit for RGB, 32-bit w/ alpha with V4 header + masks)
 - TGA (uncompressed and RLE variants)
 
+## Known issues / current status
+
+- `stb_image_write.hpp` is still WIP and not fully feature-parity with upstream `stb_image_write.h`.
+- BMP/TGA paths are the most stable right now.
+- PNG path exists, but strict PNG byte-diff/reference tests are not fully stable yet in this fork's test matrix.
+  Current known symptom: `iw_catch` may fail with a crash in the PNG strict byte-diff case.
+- Upstream reference headers for byte-diff are now taken from `3rd_party/stb` (git submodule), not local copied `*.h` files.
+
 ## Freestanding mode
 
 Enable with:
@@ -68,4 +76,4 @@ See `test/stbiw_example.cpp` for a minimal Windows-only freestanding example tha
 
 ## Tests
 
-See `test/stbiw_catch.cpp` for strict byte-diff tests (against the original stb header).
+See `test/stbiw_catch.cpp` for strict byte-diff tests (against upstream `3rd_party/stb/stb_image_write.h`).

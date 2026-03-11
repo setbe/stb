@@ -5,14 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#ifndef STBI_INCLUDE_STB_IMAGE_H
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_NO_STDIO
-#define STBI_NO_SIMD
-#define STBI_NO_THREAD_LOCALS
-#include "stb_image.h"
-#endif
+#include "detail/backend.hpp"
 
 namespace stbi {
 
@@ -218,7 +211,7 @@ static inline bool plan_impl(Format required,
     if (!to_int_len(byte_count, len)) return false;
 
     int x = 0, y = 0, comp = 0;
-    if (!stbi_info_from_memory((const stbi_uc*)bytes, len, &x, &y, &comp)) return false;
+    if (!core::ImageBackend::InfoFromMemory(bytes, len, &x, &y, &comp)) return false;
     if (x <= 0 || y <= 0 || comp <= 0 || comp > 4) return false;
 
     const Format fmt = detect_format(bytes, byte_count);
@@ -231,9 +224,9 @@ static inline bool plan_impl(Format required,
     if (!pixel_bytes((uint32_t)x, (uint32_t)y, out_comp, options.sample_type, pix_bytes)) return false;
 
     uint8_t src_bits = 8;
-    if (stbi_is_hdr_from_memory((const stbi_uc*)bytes, len)) {
+    if (core::ImageBackend::IsHdrFromMemory(bytes, len)) {
         src_bits = 32;
-    } else if (stbi_is_16_bit_from_memory((const stbi_uc*)bytes, len)) {
+    } else if (core::ImageBackend::Is16BitFromMemory(bytes, len)) {
         src_bits = 16;
     }
 
@@ -274,11 +267,11 @@ static inline bool decode_impl(Format required,
     int x = 0, y = 0, comp = 0;
     void* decoded = nullptr;
     if (plan.sample_type == SampleType::U8) {
-        decoded = (void*)stbi_load_from_memory((const stbi_uc*)bytes, len, &x, &y, &comp, (int)plan.output_channels);
+        decoded = core::ImageBackend::LoadU8FromMemory(bytes, len, &x, &y, &comp, (int)plan.output_channels);
     } else if (plan.sample_type == SampleType::U16) {
-        decoded = (void*)stbi_load_16_from_memory((const stbi_uc*)bytes, len, &x, &y, &comp, (int)plan.output_channels);
+        decoded = core::ImageBackend::LoadU16FromMemory(bytes, len, &x, &y, &comp, (int)plan.output_channels);
     } else {
-        decoded = (void*)stbi_loadf_from_memory((const stbi_uc*)bytes, len, &x, &y, &comp, (int)plan.output_channels);
+        decoded = core::ImageBackend::LoadF32FromMemory(bytes, len, &x, &y, &comp, (int)plan.output_channels);
     }
 
     if (!decoded) return false;
@@ -288,12 +281,12 @@ static inline bool decode_impl(Format required,
                           (uint32_t)y == plan.height &&
                           (uint8_t)comp == plan.channels_in_file);
     if (!ok_meta) {
-        stbi_image_free(decoded);
+        core::ImageBackend::ImageFree(decoded);
         return false;
     }
 
     memcpy(out_pixels, decoded, plan.pixel_bytes);
-    stbi_image_free(decoded);
+    core::ImageBackend::ImageFree(decoded);
 
     if (plan.flip_vertically && plan.height > 1u) {
         size_t stride = 0;
@@ -314,7 +307,7 @@ static inline size_t total_bytes(const ImagePlan& plan) noexcept {
 }
 
 inline const char* failure_reason() noexcept {
-    return stbi_failure_reason();
+    return detail::core::ImageBackend::FailureReason();
 }
 
 inline bool Plan(const uint8_t* bytes, size_t byte_count, const DecodeOptions& options, ImagePlan& out_plan) noexcept {

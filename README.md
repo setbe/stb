@@ -1,43 +1,53 @@
 # stb (freestanding C++ fork)
 
-This repository is a **freestanding-friendly C++ rewrite/fork** of a subset of Sean Barrett’s *stb* single-header libraries.
+This repository is a freestanding-friendly C++ rewrite/fork of selected stb single-header libraries.
 
-The main goals:
+Main goals:
 
-- **Freestanding-first**: build without the C runtime (CRT) and without the C++ standard library, when you choose.
-- **Readable C++**: restructure and rename internals into small, typed helpers instead of macro-heavy C.
-- **Header-only**: each module remains a single public header (`.hpp`) with OPTIONAL`detail/` integration headers.
-- **Strict tests**: Catch2 byte-diff tests compare outputs against the original stb headers where it makes sense.
+- Freestanding-first builds (optional CRT-free integration).
+- Cleaner C++ structure instead of macro-heavy C internals.
+- Header-first workflow with deterministic, testable behavior.
+- Byte-diff tests against original stb where practical.
 
-> **Security note (stb_truetype, stb_truetype_stream)**: like the original, this code is not designed to safely parse untrusted font files. Do not use it on hostile input.
+## Repository status
 
-## What’s inside
+- `stb_truetype/` - active C++ rewrite based on `stb_truetype.h`.
+- `stb_truetype_stream/` - stream-oriented atlas pipeline (SDF, MSDF, MTSDF), no allocations inside the library path.
+- `stb_image_write/` - active C++ rewrite with freestanding hooks.
+- `stb_image/` - implemented `stb_image.hpp` two-pass API (Plan + Decode) with format-specific entry points and byte-diff tests.
+  Current implementation uses an internal embedded stb_image decoder snapshot (`stb_image/detail/stb_image_internal.hpp`) while C++ internal migration continues.
+- `stb_image_resize2/` - minimal/WIP integration.
+- `3rd_party/stb/` - upstream stb git submodule used for reference/byte-diff tests.
+- `test/` - Catch2 tests and small Windows examples.
 
-- `stb_truetype/` — freestanding C++ rewrite based on `stb_truetype.h` (v1.26). Rasterizer as original.
-- `stb_truetype_stream/` — freestanding C++ library based on `stb_truetype.h`. Stream in this context means that no memory allocations occur inside the lib. Generates SDF, MSDF, MTSDF atlases with skylines.
-  Public headers: `stb_truetype.hpp, `stb_truetype_stream.hpp`.
-- `stb_image_write/` — freestanding C++ rewrite based on `stb_image_write.hpp`.  
-  Public header: `stb_image_write.hpp`
-- `stb_image/` — wrapper/rewrite work-in-progress (currently minimal).
-- `stb_image_resize2/` — header-only resize (currently minimal/WIP).
-- `test/` — Catch2 unit tests + tiny freestanding examples.
+## stb_image.hpp status (updated)
 
-## Philosophy: “integration headers”
+`stb_image/stb_image.hpp` is usable now:
 
-In freestanding mode, you usually don’t have `malloc/free/memcpy/memset/strlen` or `math.h`.
-Instead of pulling the standard library, each module includes a small `detail/*_integration.hpp`
-that defines (or lets you override) the required primitives.
+- Supported through the C++ API: PNG, BMP, GIF, PSD, PIC, JPEG, PNM, HDR, TGA.
+- Two-pass usage is available:
+  - Pass 1: `Plan*` computes dimensions/channels/output byte size.
+  - Pass 2: `Decode*` writes into caller-provided memory.
+- Batch planning helpers are available to compute max/sum memory across many images.
+- Byte-diff tests are present against original `stb_image.h`.
 
-- Define `STBTT_FREESTANDING` to enable freestanding mode in `stb_truetype.hpp` (stream version doesn't depend on any of lib C functions, so no need for this macro if you use stb_truetype_stream.hpp)
-- Define `STBIW_FREESTANDING` to enable freestanding mode in `stb_image_write.hpp`
-
-You can override any of the hooks with your own platform/engine functions.
+Important: current decode internals are still stb-derived, so internal transient allocations may still happen. The two-pass API already removes user-side guessing and supports deterministic pre-allocation strategy.
 
 ## Build (CMake)
 
-This repo ships a CMake setup that supports normal and freestanding builds on MSVC and GCC/Clang.
+Example configure:
 
-### MSVC configs
+```bash
+cmake -S . -B build -G "Visual Studio 17 2022" -A Win32
+```
+
+Example build:
+
+```bash
+cmake --build build --config ReleaseMiniNoConsole
+```
+
+Common MSVC configs:
 
 - `Debug`
 - `Release`
@@ -45,63 +55,11 @@ This repo ships a CMake setup that supports normal and freestanding builds on MS
 - `ReleaseNoConsole`
 - `ReleaseMiniNoConsole`
 
-The `Release*` “freestanding” configs typically:
-- disable RTTI/exceptions (where possible),
-- prefer `/MT` (static CRT) or a freestanding-friendly runtime setup,
-- build tiny Win32 GUI subsystem examples (`WinMain`) for NoConsole configs.
+## Security note
 
-> If you are going *fully* CRT-free on Windows, you’ll also need a minimal runtime strategy
-> (entry point, termination, memset/memcpy, etc.). See each module’s README for integration notes.
-
-### Quick commands
-
-Configure (Visual Studio generator example):
-
-```bash
-cmake -S . -B build -G "Visual Studio 17 2022" -A Win32
-```
-
-Build a configuration:
-
-```bash
-cmake --build build --config ReleaseMiniNoConsole
-```
-
-## Quick usage
-
-### stb_image_write (Writer)
-
-```cpp
-#define STBIW_FREESTANDING
-#include "stb_image_write/stb_image_write.hpp"
-
-// Provide a callback that writes bytes somewhere (file, socket, buffer, etc.)
-static void my_write(void* ctx, const void* data, int size);
-
-stbiw::Writer w;
-w.start_callbacks(my_write, ctx);
-w.set_flip_vertically(false);
-
-// pixels = RGBA (comp=4)
-w.write_bmp_core(width, height, 4, pixels);
-w.flush();
-```
-
-### stb_truetype (Font)
-
-```cpp
-#define STBTT_FREESTANDING
-#include "stb_truetype/stb_truetype.hpp"
-
-// font_buffer must contain the entire font file in memory:
-stbtt::Font font;
-if (!font.ReadBytes(font_buffer)) { /* handle error */ }
-
-float s = font.ScaleForPixelHeight(32.0f);
-int glyph = font.FindGlyphIndex('A');
-```
+As with original stb-family libraries, do not treat these parsers as hardened against hostile input without additional sandboxing and validation.
 
 ## License
 
-MIT (see `LICENSE`). Original stb code: Sean Barrett and contributors.
-This fork: additional refactors and freestanding integration.
+MIT (see `LICENSE`).
+Original stb code is by Sean Barrett and contributors.

@@ -3,7 +3,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
 #define STBI_NO_SIMD
-#include "../stb_image/stb_image.h"
+#include "../3rd_party/stb/stb_image.h"
 
 extern "C" {
 
@@ -21,4 +21,3 @@ void stbi_ref_image_free(void* p) {
 }
 
 } // extern "C"
-

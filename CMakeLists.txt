@@ -15,6 +15,11 @@ endif()
 
 project(freestanding_stb LANGUAGES CXX)
 
+set(STB_UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/3rd_party/stb")
+if(NOT EXISTS "${STB_UPSTREAM_DIR}/stb_image.h")
+    message(WARNING "Upstream stb submodule not found. Run: git submodule update --init --recursive")
+endif()
+
 # ---------------------------------------------------------------------------
 # Seed missing per-config flag variables (must be AFTER project())
 # to avoid: CMAKE_EXE_LINKER_FLAGS_<CFG> not set
@@ -327,7 +332,7 @@ set(SOURCES_TRUETYPE
 )
 set(SOURCES_TRUETYPE_CATCH
     ${SOURCES_TRUETYPE}
-    "stb_truetype/stb_truetype.h"   # original for byte-diff tests
+    "${STB_UPSTREAM_DIR}/stb_truetype.h"   # upstream reference for byte-diff tests
 )
 
 # truetype stream
@@ -352,7 +357,7 @@ set(SOURCES_TRUETYPE_STREAM
 set(SOURCES_IMAGE "stb_image/stb_image.hpp")
 set(SOURCES_IMAGE_CATCH
     ${SOURCES_IMAGE}
-    "stb_image/stb_image.h"       # original for byte-diff tests
+    "${STB_UPSTREAM_DIR}/stb_image.h"       # upstream reference for byte-diff tests
     "test/stbi_test.hpp"
     "test/stbi_ref_original.cpp"
 )
@@ -365,7 +370,7 @@ set(SOURCES_IMAGE_WRITE
 )
 set(SOURCES_IMAGE_WRITE_CATCH
     ${SOURCES_IMAGE_WRITE}
-    "stb_image_write/stb_image_write.h"   # original for byte-diff tests
+    "${STB_UPSTREAM_DIR}/stb_image_write.h"   # upstream reference for byte-diff tests
 )
 
 # image resize

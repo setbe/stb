@@ -1,27 +1,73 @@
-# stb_truetype (freestanding C++ rewrite)
+# stb_truetype
 
-This module is a freestanding-friendly C++ rewrite/fork of `stb_truetype.h` (based on v1.26).
+`stb_truetype/stb_truetype.hpp` is a C++ rewrite/fork of `stb_truetype.h` (based on v1.26), focused on:
 
-Public header:
+- `stbtt::Font` object API instead of C-style global functions
+- freestanding-friendly integration
+- easier embedding into custom engines/tools
+
+## Security Warning
+
+Same as the original stb project: this code is **not hardened** for hostile input.
+Do not parse untrusted font files with this library.
+
+## Public Header
+
 - `stb_truetype/stb_truetype.hpp`
 
-## Big warning (same as original)
+Everything is inside namespace `stbtt`.
 
-This library is **not hardened** against malicious fonts. It does not fully validate offsets and tables.
-Do **not** run it on untrusted font files.
+## Main API
 
-## What changed vs original stb_truetype.h
+Core type:
 
-- C++ namespace + types (`namespace stbtt`)
-- Code is reorganized into smaller helpers and `detail/` headers
-- Freestanding integration through `detail/libc_integration.hpp` and `detail/math_integration.hpp`
-- API is not required to match the original exactly (this repo prioritizes clean integration)
+- `stbtt::Font`
 
-Key public types you’ll see:
-- `stbtt::Font` — main font handle (replaces the “info+functions” style)
-- `stbtt::Bitmap`, `stbtt::Box`, `stbtt::GlyphHorMetrics`
+Most-used methods:
 
-## Freestanding mode
+- `bool ReadBytes(uint8_t* font_buffer) noexcept`
+- `float ScaleForPixelHeight(float height) const noexcept`
+- `int FindGlyphIndex(int unicode_codepoint) const noexcept`
+- `GlyphHorMetrics GetGlyphHorMetrics(int glyph_index) const noexcept`
+- `bool GetGlyphBox(int glyph_index, Box& out) noexcept`
+- `Box GetGlyphBitmapBox(int glyph_index, float scale_x, float scale_y, float shift_x = 0, float shift_y = 0) noexcept`
+- `void MakeGlyphBitmap(unsigned char* output, int glyph_index, int out_w, int out_h, int out_stride, float scale_x, float scale_y, float shift_x = 0, float shift_y = 0) noexcept`
+- `static int GetFontOffsetForIndex(uint8_t* font_buffer, int index) noexcept`
+- `static int GetNumberOfFonts(const uint8_t* font_buffer) noexcept`
+
+Useful public structs:
+
+- `stbtt::Box`
+- `stbtt::Bitmap`
+- `stbtt::GlyphHorMetrics`
+
+## Minimal Usage
+
+```cpp
+#define STBTT_FREESTANDING
+#include "stb_truetype/stb_truetype.hpp"
+
+bool RenderGlyphA(uint8_t* font_bytes, unsigned char* out, int stride) noexcept {
+    stbtt::Font font{};
+    if (!font.ReadBytes(font_bytes)) return false;
+
+    const int glyph = font.FindGlyphIndex('A');
+    if (glyph <= 0) return false;
+
+    const float scale = font.ScaleForPixelHeight(48.0f);
+    const stbtt::Box box = font.GetGlyphBitmapBox(glyph, scale, scale);
+    const int w = box.x1 - box.x0;
+    const int h = box.y1 - box.y0;
+    if (w <= 0 || h <= 0) return false;
+
+    const float shift_x = -box.x0 * scale;
+    const float shift_y = -box.y0 * scale;
+    font.MakeGlyphBitmap(out, glyph, w, h, stride, scale, scale, shift_x, shift_y);
+    return true;
+}
+```
+
+## Freestanding Mode
 
 Enable with:
 
@@ -30,52 +76,26 @@ Enable with:
 #include "stb_truetype/stb_truetype.hpp"
 ```
 
-When `STBTT_FREESTANDING` is defined, `stb_truetype.hpp` includes:
+In this mode the header uses:
 
-- `detail/math_integration.hpp` — provides `STBTT_ifloor`, `STBTT_sqrt`, etc.
-- `detail/libc_integration.hpp` — provides allocation and byte utilities
+- `stb_truetype/detail/math_integration.hpp`
+- `stb_truetype/detail/libc_integration.hpp`
 
-You can override these hooks before including the header.
+You can override hooks before include:
 
-### Required libc hooks
+- alloc/free: `STBTT_malloc`, `STBTT_free`
+- memory/string: `STBTT_memcpy`, `STBTT_memset`, `STBTT_strlen`
+- math: `STBTT_ifloor`, `STBTT_iceil`, `STBTT_sqrt`, `STBTT_pow`, `STBTT_fmod`, `STBTT_cos`, `STBTT_acos`, `STBTT_fabs`
 
-- `STBTT_malloc(size_t bytes, void* user)`
-- `STBTT_free(void* ptr, void* user)`
-- `STBTT_memcpy`, `STBTT_memset`
-- `STBTT_strlen`
+## Differences vs Original `stb_truetype.h`
 
-### Required math hooks (freestanding only)
+- C API replaced with C++ OOP API (`stbtt::Font`)
+- namespaced internals and reorganized code
+- freestanding integration is first-class
+- API is intentionally not a strict 1:1 symbol match with original C header
 
-- `STBTT_ifloor`, `STBTT_iceil`
-- `STBTT_sqrt`, `STBTT_pow`
-- `STBTT_fmod`
-- `STBTT_cos`, `STBTT_acos`
-- `STBTT_fabs`
+Rasterization logic and font table behavior follow the original stb approach, adapted to this C++ structure.
 
-## Minimal example
+## Examples
 
-```cpp
-#define STBTT_FREESTANDING
-#include "stb_truetype/stb_truetype.hpp"
-
-bool render_glyph_A(const uint8_t* font_bytes) {
-    stbtt::Font font;
-    if (!font.ReadBytes(const_cast<uint8_t*>(font_bytes)))
-        return false;
-
-    const float s = font.ScaleForPixelHeight(48.0f);
-    const int glyph = font.FindGlyphIndex('A');
-
-    stbtt::Box box = font.GetGlyphBitmapBox(glyph, s, s);
-    const int w = box.x1 - box.x0;
-    const int h = box.y1 - box.y0;
-
-    // allocate output bitmap using your allocator...
-    // font.MakeGlyphBitmap(out, glyph, w, h, stride, s, s);
-    return true;
-}
-```
-
-## Tests
-
-See `test/stbtt_catch.cpp` for unit tests and byte-diff comparisons.
+- `test/stbtt_example.cpp` (freestanding Win32 glyph render demo)

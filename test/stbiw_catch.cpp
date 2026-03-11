@@ -6,14 +6,14 @@
 #include <cstring>   // std::memcmp
 #include <string>
 
-// C++ port
-#define STBI_FREESTANDING
-#include "../stb_image_write/stb_image_write.hpp"
-
 // C reference
 #define STBI_WRITE_NO_STDIO
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "../stb_image_write/stb_image_write.h"
+#include "../3rd_party/stb/stb_image_write.h"
+
+// C++ port
+#define STBI_FREESTANDING
+#include "../stb_image_write/stb_image_write.hpp"
 
 namespace {
 
@@ -22,12 +22,14 @@ namespace {
     // --------------------------- Helpers: byte sink ---------------------------
 
     static void cb_const(void* ctx, const void* data, int size) {
+        if (!ctx || !data || size <= 0) return;
         auto& out = *static_cast<std::vector<std::uint8_t>*>(ctx);
         const auto* p = static_cast<const std::uint8_t*>(data);
         out.insert(out.end(), p, p + size);
     }
 
     static void cb_legacy(void* ctx, void* data, int size) {
+        if (!ctx || !data || size <= 0) return;
         auto& out = *static_cast<std::vector<std::uint8_t>*>(ctx);
         const auto* p = static_cast<const std::uint8_t*>(data);
         out.insert(out.end(), p, p + size);

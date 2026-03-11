@@ -239,7 +239,7 @@ namespace stbtt_bench {
 #ifndef STBTT_BENCH_NO_REFERENCE
 #   define STB_TRUETYPE_IMPLEMENTATION
 #   define STBTT_STATIC
-#   include "../stb_truetype/stb_truetype.h"
+#   include "../3rd_party/stb/stb_truetype.h"
 #endif
 
 // ---------------- Prep + Bench (PORT) ----------------

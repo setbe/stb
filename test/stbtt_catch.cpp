@@ -275,7 +275,7 @@ namespace stbtt_test {
 #if defined(STBTT_TEST_WITH_REFERENCE) && STBTT_TEST_WITH_REFERENCE
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
-#include "../stb_truetype/stb_truetype.h"
+#include "../3rd_party/stb/stb_truetype.h"
 #endif
 
 // =====================================================================================

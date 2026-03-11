@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "../stb_image_write/stb_image_write.h"
+#include "../3rd_party/stb/stb_image_write.h"
 
 #include "../stb_truetype_stream/stb_truetype_stream.hpp"
 #include "../stb_truetype_stream/codepoints/stbtt_codepoints_stream.hpp"

@@ -1,328 +1,184 @@
 # stb_truetype_stream
 
-`stb_truetype_stream.hpp` is a freestanding-oriented fork of `stb_truetype`,
-designed for **SDF / MSDF / MTSDF generation with zero internal dynamic allocations** and
-**fully user-controlled memory**.
+`stb_truetype_stream/stb_truetype_stream.hpp` is a freestanding-oriented C++ fork for deterministic distance-field generation from TrueType fonts.
 
-The library follows a **streaming glyph processing model**:
-glyph outlines are parsed and consumed *on the fly*, without ever building or
-storing full contour representations in memory.
+Primary goals:
 
----
+- no internal `malloc/new` or STL dependency in the core header
+- user-owned memory only
+- deterministic two-pass pipeline
+- SDF / MSDF / MTSDF output
 
-## Design Goals
+## Security Warning
 
-- ❌ No `malloc`, `new`, STL, or CRT usage inside the library
-- ✅ Freestanding-friendly (custom allocators, OS APIs, bare metal)
-- ✅ Deterministic memory usage
-- ✅ Explicit two-pass pipeline (Plan → Build)
-- ✅ SDF and MSDF generation
-- ✅ Safe composite glyph handling
-- ✅ Suitable for games, GUI libraries, and asset pipelines
+Like upstream stb code, this parser is not hardened for untrusted fonts.
+Use only on trusted font files.
 
----
+## Standalone Core Header
 
-## What “stream” means here
+Core API lives in one file:
 
-The word **stream** in `stb_truetype_stream` does **not** mean file I/O
-or `std::istream`.
+- `stb_truetype_stream/stb_truetype_stream.hpp`
 
-In this project, *stream* means:
+This header is fully usable on its own.
+It does **not** require anything from `codepoints/`.
 
-> **Glyph geometry is processed incrementally and immediately consumed,
-> without being stored in intermediate structures.**
+## Core API (namespace `stbtt_stream`)
 
-### In practice
+Main type:
 
-- Glyph outlines are read directly from the `glyf` table
-- Segments are emitted immediately into a consumer (`GlyphSink`)
-- No retained contours, no edge lists, no temporary geometry buffers
-- Composite glyphs are resolved recursively with a guarded visit stack
-- Distance fields are accumulated during traversal
+- `stbtt_stream::Font`
 
-This enables:
+Important methods:
 
-- predictable memory usage
-- very small scratch buffers
-- safe use in freestanding environments
-- processing large fonts without transient allocations
+- `bool ReadBytes(uint8_t* font_buffer) noexcept`
+- `float ScaleForPixelHeight(float height) const noexcept`
+- `int FindGlyphIndex(int unicode_codepoint) const noexcept`
+- `GlyphHorMetrics GetGlyphHorMetrics(int glyph_index) const noexcept`
+- `size_t PlanBytes(const PlanInput& in) const noexcept`
+- `bool Plan(const PlanInput& in, void* plan_mem, size_t plan_bytes, FontPlan& out_plan) noexcept`
+- `bool Build(const FontPlan& plan, uint8_t* atlas, uint32_t atlas_stride_bytes) noexcept`
+- `bool StreamDF(const GlyphPlan& gp, unsigned char* atlas, uint32_t atlas_stride_bytes, DfMode mode, float scale, float spread, GlyphScratch& scratch, uint16_t max_points, uint32_t max_area) noexcept`
 
----
+Main data types:
 
-## Core Library (`stb_truetype_stream.hpp`)
+- `DfMode` (`SDF`, `MSDF`, `MTSDF`)
+- `PlanInput`
+- `FontPlan`
+- `GlyphPlan`
 
-The core header is **fully standalone**.
+## Two-Pass Workflow
 
-It does **not** depend on anything in the `codepoints/` directory.
+### Pass 1: memory planning
 
-### Responsibilities
+1. Fill `PlanInput` with mode, pixel height, spread, and codepoint list.
+2. Call `PlanBytes(in)` to get required bytes for plan arena.
+3. Allocate `plan_mem` once.
+4. Call `Plan(in, plan_mem, plan_bytes, plan)` to compute packed glyph layout and bind internal views.
 
-- Parsing TrueType tables (`cmap`, `glyf`, `loca`, etc.)
-- Streaming glyph outlines
-- Handling composite glyphs safely
-- Generating:
-  - **SDF** (single-channel signed distance field)
-  - **MSDF** (multi-channel signed distance field)
-  - **MTSDF** (multi-channel true signed distance field)
-- Exposing a memory-explicit API
+### Pass 2: build output atlas
 
----
+1. Allocate atlas buffer based on `plan.atlas_side` and component count:
+   - `SDF` -> 1 channel
+   - `MSDF` -> 3 channels
+   - `MTSDF` -> 4 channels
+2. Call `Build(plan, atlas, stride_bytes)`.
 
-## Two-Pass API Overview
+No internal allocation happens during `Build`.
 
-### Pass 1: Plan
+## Deterministic Memory Reuse (recommended)
 
-The **Plan** step answers:
+For batching multiple fonts / script sets:
 
-> *“How much memory do I need, and how will glyphs be laid out?”*
+1. Run Pass 1 for each job and track:
+   - maximum `PlanBytes`
+   - maximum atlas byte size
+2. Allocate one reusable plan arena and one reusable atlas buffer with these maxima.
+3. Process jobs sequentially (`Plan` -> `Build`) reusing the same buffers.
+
+This minimizes fragmentation and prevents runtime reallocation churn.
+
+## Optional Addon: `stbtt_codepoints_stream.hpp`
+
+Addon header:
+
+- `stb_truetype_stream/codepoints/stbtt_codepoints_stream.hpp`
+
+Namespace:
+
+- `stbtt_codepoints`
+
+Purpose:
+
+- script presets (`Script::Latin`, `Script::Cyrillic`, `Script::Kana`, ...)
+- helper pass to count/collect codepoints present in a specific font
+
+Important: this addon is optional convenience only.
+`stb_truetype_stream.hpp` remains fully independent and standalone.
+
+## Correct `stbtt_codepoints::` Usage
+
+The addon itself follows two passes:
+
+1. `PlanGlyphs(font, scripts...)` -> get required codepoint capacity
+2. `CollectGlyphs(font, sink, script)` -> fill your buffer
+
+Recommended usage pattern:
 
 ```cpp
-PlanInput in{};
-in.mode = DfMode::SDF;          // or MSDF/MTSDF
-in.pixel_height = 32;
+#include "stb_truetype_stream/stb_truetype_stream.hpp"
+#include "stb_truetype_stream/codepoints/stbtt_codepoints_stream.hpp"
+
+stbtt_stream::Font font{};
+// font.ReadBytes(...)
+
+const uint32_t count = stbtt_codepoints::PlanGlyphs(
+    font,
+    stbtt_codepoints::Script::Latin,
+    stbtt_codepoints::Script::Cyrillic,
+    stbtt_codepoints::Script::Greek
+);
+
+uint32_t* codepoints = /* allocate count entries */;
+uint32_t at = 0;
+
+auto sink = [&](uint32_t cp, int /*glyph_index*/) noexcept {
+    if (at < count) codepoints[at++] = cp;
+};
+
+stbtt_codepoints::CollectGlyphs(font, sink, stbtt_codepoints::Script::Latin);
+stbtt_codepoints::CollectGlyphs(font, sink, stbtt_codepoints::Script::Cyrillic);
+stbtt_codepoints::CollectGlyphs(font, sink, stbtt_codepoints::Script::Greek);
+
+stbtt_stream::PlanInput in{};
+in.mode = stbtt_stream::DfMode::MSDF;
+in.pixel_height = 48;
+in.spread_px = 4.0f;
+in.codepoints = codepoints;
+in.codepoint_count = at;
+```
+
+Notes:
+
+- sink signature is `sink(uint32_t codepoint, int glyph_index)`
+- addon does not deduplicate between scripts; deduplicate on your side if needed
+- collected codepoints are exactly what you pass into `stbtt_stream::PlanInput`
+
+## Minimal Core-Only Example (no addon)
+
+```cpp
+stbtt_stream::Font font{};
+if (!font.ReadBytes(font_bytes)) return false;
+
+uint32_t cps[] = { 'A', 'B', 'C' };
+stbtt_stream::PlanInput in{};
+in.mode = stbtt_stream::DfMode::SDF;
+in.pixel_height = 48;
 in.spread_px = 4.0f;
 in.codepoints = cps;
-in.codepoint_count = count;
+in.codepoint_count = 3;
 
-size_t bytes = font.PlanBytes(in);
-void* plan_mem = user_allocate(bytes); // your allocation
+const size_t plan_bytes = font.PlanBytes(in);
+void* plan_mem = user_alloc(plan_bytes);
 
-FontPlan plan{};
-font.Plan(in, plan_mem, bytes, plan);
+stbtt_stream::FontPlan plan{};
+if (!font.Plan(in, plan_mem, plan_bytes, plan)) return false;
+
+const uint32_t comp = 1; // SDF
+const uint32_t stride = (uint32_t)plan.atlas_side * comp;
+uint8_t* atlas = user_alloc((size_t)plan.atlas_side * (size_t)plan.atlas_side * comp);
+
+if (!font.Build(plan, atlas, stride)) return false;
 ```
 
-What happens here:
+## Example Programs
 
-- Glyphs are analyzed
-- Bounding boxes are expanded by spread
-- Maximum point counts and scratch sizes are computed
-- A skyline atlas is packed
-- All internal pointers are bound into `FontPlan`
+- `test/stbtt_stream_example.cpp` (freestanding SDF/MSDF window demo)
+- `test/stbtt_stream_bitmap_example.cpp` (atlas generation with optional `stbtt_codepoints`)
 
-No rendering happens here.
+## Differences vs Original `stb_truetype`
 
----
-
-### Pass 2: Build
-
-The **Build** step performs actual SDF/MSDF/MTSDF generation.
-
-```cpp
-uint8_t* atlas = user_allocate(plan.atlas_side * plan.atlas_side * components);
-font.Build(plan, atlas, stride_bytes);
-```
-
-What happens here:
-
-- Each glyph is streamed from `glyf`
-- Distance passes are executed
-- Inside/outside sign is resolved
-- Results are written directly into the atlas
-
-No allocations occur.
-
----
-
-## Streaming a Single Glyph (No Atlas)
-
-You can bypass the atlas system and stream **one glyph directly** into a buffer.
-
-Useful for debugging, tools, or dynamic rendering. BUT be aware that glyph could possibly be larger than your buffer.
-
-```cpp
-font.StreamDF(
-    glyph_plan,
-    pixels,
-    stride_bytes,
-    DfMode::SDF,
-    scale,
-    spread_fu,
-    scratch,
-    max_points,
-    max_area
-);
-```
-
----
-
-## Composite Glyph Handling
-
-Composite glyphs (accented characters, CJK compositions, etc.) are:
-
-- resolved recursively
-- transformed via affine matrices
-- protected by a **cycle-safe visit stack**
-
-No stack corruption, no double pops, no infinite recursion.
-
----
-
-## Optional Module: `codepoints/`
-
-The `codepoints/` directory is a **purely optional helper module**.
-
-The core library:
-
-- does **not** include it
-- does **not** depend on it
-- does **not** require it
-
-### Purpose
-
-`stbtt_codepoints` exists to:
-
-- define Unicode script ranges
-- help users build *conservative* glyph sets
-- avoid shipping massive, unnecessary atlases
-
----
-
-## Supported Scripts (Optional Module)
-
-Currently provided scripts:
-
-- Latin
-- Cyrillic
-- Greek
-- Arabic
-- Hebrew
-- Devanagari
-- Kana (Hiragana + Katakana)
-- Jōyō Kanji
-- CJK Unified Ideographs
-
-Each script is defined as:
-
-- Unicode ranges
-- optional explicit codepoint lists (“singles”)
-
----
-
-## Using `stbtt_codepoints` (Pseudocode)
-
-The optional module follows a **two-step pattern**.
-
-### Step 1: Count glyphs (planning)
-
-```cpp
-count = PlanGlyphs(font,
-    Latin,
-    Cyrillic,
-    Greek
-);
-```
-
-This step:
-
-- iterates script ranges
-- checks `font.FindGlyphIndex(cp)`
-- counts only glyphs actually present in the font
-
-No memory allocation happens here.
-
----
-
-### Step 2: Collect codepoints
-
-```cpp
-allocate array codepoints[count]
-
-index = 0
-sink(cp, glyph_index):
-    codepoints[index++] = cp
-
-BuildGlyphs(font, Latin, sink)
-BuildGlyphs(font, Cyrillic, sink)
-BuildGlyphs(font, Greek, sink)
-```
-
-Now you have a **minimal, conservative codepoint list**.
-
----
-
-## Full Bitmap Generation Pipeline (SDF / MSDF)
-
-```text
-Font bytes
-   ↓
-Font::ReadBytes
-   ↓
-(optional) stbtt_codepoints::PlanGlyphs
-   ↓
-(optional) stbtt_codepoints::BuildGlyphs
-   ↓
-Font::PlanBytes
-   ↓
-allocate plan memory
-   ↓
-Font::Plan
-   ↓
-allocate atlas bitmap
-   ↓
-Font::Build
-   ↓
-SDF / MSDF / MTSDF bitmap ready
-```
-
-Key properties:
-
-- all allocations are user-owned
-- scratch memory is bounded and known
-- pipeline is deterministic
-- same flow works for SDF and MSDF
-
----
-
-## About Codepoint Coverage
-
-The provided script ranges are **intentionally conservative but not minimal**.
-
-Unicode blocks often include:
-
-- historical glyphs
-- deprecated characters
-- rarely used symbols
-
-These increase:
-
-- atlas size
-- generation time
-- memory usage
-
-### Philosophy
-
-> Minimalism matters — in the library *and* in generated data.
-
-If you know a script well and can safely reduce its ranges,
-**pull requests are very welcome**.
-
-Smaller codepoint sets mean:
-
-- smaller atlases
-- faster builds
-- less GPU memory usage
-
----
-
-## What This Library Is *Not*
-
-- ❌ Not a text shaping engine (no HarfBuzz logic)
-- ❌ Not a layout engine
-- ❌ Not a rasterizer
-- ❌ Not tied to OpenGL, Vulkan, or DirectX
-
-It is intentionally low-level.
-
----
-
-## Typical Use Cases
-
-- Custom GUI libraries
-- Game engines (SDF/MSDF/MTSDF text rendering)
-- Asset pipelines
-- Tools and font preprocessors
-- Freestanding or CRT-free environments
-
----
-
-## MIT License
+- object-oriented, namespaced C++ API
+- explicit caller-owned memory model
+- deterministic Plan/Build pipeline
+- streaming-oriented distance-field generation path
