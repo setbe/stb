@@ -30,7 +30,7 @@ SOFTWARE.
 // meaning an attacker can use it to read arbitrary memory.
 //
 // =======================================================================
-
+#pragma once
 // ------------------- Freestanding-friendly Includes -------------------------
 #include <stddef.h> // size_t
 #include <stdint.h> // uint32_t
